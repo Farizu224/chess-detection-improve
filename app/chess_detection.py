@@ -534,29 +534,47 @@ class ChessDetectionService:
     def _detection_loop(self):
         """Main detection loop running in separate thread"""
         try:
+            print(f"\n🎥 Opening camera index: {self.camera_index}")
+            
             # Try different backends for better compatibility
+            # CAP_ANY first for devices like DroidCam
             backends_to_try = [
+                cv2.CAP_ANY,        # Any available (best for DroidCam)
                 cv2.CAP_DSHOW,      # DirectShow (Windows)
                 cv2.CAP_MSMF,       # Media Foundation (Windows)
                 cv2.CAP_V4L2,       # Video4Linux2 (Linux)
-                cv2.CAP_ANY         # Any available
             ]
             
             self.cap = None
             for backend in backends_to_try:
                 try:
-                    print(f"Trying camera backend: {backend}")
+                    backend_name = {
+                        cv2.CAP_ANY: "CAP_ANY",
+                        cv2.CAP_DSHOW: "DirectShow",
+                        cv2.CAP_MSMF: "Media Foundation",
+                        cv2.CAP_V4L2: "Video4Linux2"
+                    }.get(backend, f"Backend {backend}")
+                    
+                    print(f"   Trying {backend_name} (camera {self.camera_index})...")
                     self.cap = cv2.VideoCapture(self.camera_index, backend)
+                    
                     if self.cap.isOpened():
-                        print(f"✅ Successfully opened camera with backend: {backend}")
-                        self.camera_backend = backend  # Store successful backend
-                        break
+                        # Verify it's the right camera by reading a test frame
+                        ret, test_frame = self.cap.read()
+                        if ret and test_frame is not None:
+                            print(f"   ✅ Successfully opened camera {self.camera_index} with {backend_name}")
+                            self.camera_backend = backend  # Store successful backend
+                            break
+                        else:
+                            print(f"   ⚠️ Camera opened but cannot read frame")
+                            self.cap.release()
+                            self.cap = None
                     else:
                         if self.cap:
                             self.cap.release()
                         self.cap = None
                 except Exception as e:
-                    print(f"Backend {backend} failed: {e}")
+                    print(f"   ❌ {backend_name} failed: {e}")
                     continue
             
             if not self.cap or not self.cap.isOpened():
@@ -632,19 +650,35 @@ class ChessDetectionService:
                     # Try to reset camera if too many failures
                     frame_count += 1
                     if frame_count % 10 == 0:
-                        print("Attempting to reset camera...")
+                        print(f"\n⚠️ Attempting to reset camera {self.camera_index}...")
                         try:
                             self.cap.release()
                             time.sleep(0.5)
+                            
                             # Use same backend that worked initially
-                            backend = self.camera_backend if self.camera_backend else cv2.CAP_DSHOW
+                            backend = self.camera_backend if hasattr(self, 'camera_backend') and self.camera_backend else cv2.CAP_ANY
+                            backend_name = {
+                                cv2.CAP_ANY: "CAP_ANY",
+                                cv2.CAP_DSHOW: "DirectShow",
+                                cv2.CAP_MSMF: "Media Foundation"
+                            }.get(backend, f"Backend {backend}")
+                            
+                            print(f"   Reopening camera {self.camera_index} with {backend_name}...")
                             self.cap = cv2.VideoCapture(self.camera_index, backend)
+                            
                             if not self.cap.isOpened():
-                                print("Camera reset failed")
+                                print(f"   ❌ Camera {self.camera_index} reset failed")
                                 break
-                            print(f"✅ Camera reset successful using backend: {backend}")
+                            
+                            # Test read
+                            test_ret, test_frame = self.cap.read()
+                            if not test_ret:
+                                print(f"   ❌ Camera opened but cannot read")
+                                break
+                                
+                            print(f"   ✅ Camera {self.camera_index} reset successful with {backend_name}")
                         except Exception as e:
-                            print(f"Camera reset error: {e}")
+                            print(f"   ❌ Camera reset error: {e}")
                             break
                     continue
                 
