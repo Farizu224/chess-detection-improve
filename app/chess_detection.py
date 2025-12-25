@@ -92,6 +92,7 @@ class ChessDetectionService:
         self.auto_detection_enabled = True  # Enable automatic motion-based detection
         self.detection_paused_by_motion = False  # Motion detection status
         self.last_valid_fen = None  # Last validated FEN
+        self.camera_backend = None  # Store successful camera backend
         self.performance_stats = {
             'inference_time': 0,
             'fps': 0,
@@ -547,7 +548,8 @@ class ChessDetectionService:
                     print(f"Trying camera backend: {backend}")
                     self.cap = cv2.VideoCapture(self.camera_index, backend)
                     if self.cap.isOpened():
-                        print(f"Successfully opened camera with backend: {backend}")
+                        print(f"✅ Successfully opened camera with backend: {backend}")
+                        self.camera_backend = backend  # Store successful backend
                         break
                     else:
                         if self.cap:
@@ -634,10 +636,13 @@ class ChessDetectionService:
                         try:
                             self.cap.release()
                             time.sleep(0.5)
-                            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+                            # Use same backend that worked initially
+                            backend = self.camera_backend if self.camera_backend else cv2.CAP_DSHOW
+                            self.cap = cv2.VideoCapture(self.camera_index, backend)
                             if not self.cap.isOpened():
                                 print("Camera reset failed")
                                 break
+                            print(f"✅ Camera reset successful using backend: {backend}")
                         except Exception as e:
                             print(f"Camera reset error: {e}")
                             break
@@ -684,7 +689,9 @@ class ChessDetectionService:
                         print("Manual camera reset...")
                         self.cap.release()
                         time.sleep(0.5)
-                        self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+                        backend = self.camera_backend if self.camera_backend else cv2.CAP_DSHOW
+                        self.cap = cv2.VideoCapture(self.camera_index, backend)
+                        print(f"✅ Camera reset successful using backend: {backend}")
                     # Analysis controls
                     elif key == ord('a'):  # Start analysis
                         self._start_analysis_window()
