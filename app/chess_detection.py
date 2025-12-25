@@ -917,9 +917,17 @@ class ChessDetectionService:
             display_image = processed_image
             
             if self.fps_counter % 3 == 0:
-                results = self.model(processed_image, verbose=False)
+                # Lower confidence threshold for better detection
+                if self.model is not None:
+                    results = self.model(processed_image, conf=0.15, verbose=False)
+                elif self.inference_engine is not None:
+                    results = self.inference_engine.infer(processed_image, conf_threshold=0.15)
+                else:
+                    print("⚠️ WARNING: No model loaded (neither PyTorch nor ONNX)!")
+                    return image
                 
                 if len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+                    print(f"✅ Detected {len(results[0].boxes)} pieces")
                     if self.show_bbox:
                         display_image = results[0].plot()
                     else:
@@ -935,6 +943,8 @@ class ChessDetectionService:
                         if fen_code:
                             self.last_fen = fen_code
                 else:
+                    if self.fps_counter % 30 == 0:  # Log occasionally to avoid spam
+                        print(f"⚠️ No pieces detected (try adjusting camera angle or lighting)")
                     display_image = processed_image
                     self.last_piece_results = None
                 
@@ -1057,10 +1067,14 @@ class ChessDetectionService:
             return flattened_image
     
     # Enhanced web API methods
-    def detect_pieces(self, image, mode='raw', show_bbox=True, show_board_grid=True, use_flattened=True):
-        """Enhanced detect pieces for web API with board detection and FEN generation"""
-        if self.model is None:
-            print("YOLO model not loaded")
+    def detect_pieces(self, image, mode='raw', show_bbox=True, show_board_grid=True, use_flattened=True, conf=0.15):
+        """Enhanced detect pieces for web API with board detection and FEN generation
+        
+        Args:
+            conf: Confidence threshold (default 0.15 - lower than YOLO default 0.25 for better detection)
+        """
+        if self.model is None and self.inference_engine is None:
+            print("⚠️ WARNING: No model loaded (neither PyTorch nor ONNX)!")
             return image, None, None, None, None
             
         try:
@@ -1076,13 +1090,20 @@ class ChessDetectionService:
             # Board detection
             board_corners, intersections, grid_coords, flattened_board = self.detect_chessboard(processed_image)
             
-            # Piece detection - SELALU pada original processed image
-            results = self.model(processed_image, verbose=False)
+            # Piece detection with lower confidence threshold
+            if self.model is not None:
+                results = self.model(processed_image, conf=conf, verbose=False)
+            elif self.inference_engine is not None:
+                results = self.inference_engine.infer(processed_image, conf_threshold=conf)
+            else:
+                print("⚠️ No model available for inference!")
+                return image, None, None, None, None
             
             piece_results = None
             fen_code = None
             
             if len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+                print(f"✅ detect_pieces: Found {len(results[0].boxes)} pieces with conf >= {conf}")
                 piece_results = results[0]
                 
                 # Generate FEN if we have both pieces and board
