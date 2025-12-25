@@ -64,8 +64,8 @@ class ChessDetectionService:
         
         # 3. Temporal Smoother (reduce flickering)
         self.temporal_smoother = TemporalSmoother(
-            window_size=5,              # Frames to consider
-            min_confidence=0.6          # Minimum confidence threshold
+            buffer_size=5,              # Number of predictions to buffer
+            min_consensus=3             # Minimum votes for consensus
         )
         print("✅ Temporal Smoother initialized (reduce flickering)")
         

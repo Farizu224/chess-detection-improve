@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChessMon - Admin Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        .chess-board-pattern {
+            background-image: 
+                repeating-conic-gradient(#fef7ed 0% 25%, #fed7aa 25% 50%);
+            background-size: 40px 40px;
+        }
+        
+        .card-elegant {
+            background: linear-gradient(145deg, #fefcfb, #fef7ed);
+            box-shadow: 
+                0 10px 25px -5px rgba(120, 53, 15, 0.1),
+                0 5px 10px -5px rgba(120, 53, 15, 0.04);
+        }
+        
+        .navbar-elegant {
+            background: linear-gradient(135deg, #78350f, #92400e);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 20px rgba(120, 53, 15, 0.3);
+        }
+        
+        .timer-display {
+            font-size: 3rem;
+            font-weight: 900;
+            font-family: 'Courier New', monospace;
+            text-shadow: 2px 2px 4px rgba(120, 53, 15, 0.2);
+        }
+        
+        .status-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .status-active { 
+            background: linear-gradient(135deg, #10b981, #059669);
+            animation: pulse 2s infinite;
+        }
+        .status-paused { 
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+        }
+        .status-waiting { 
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .camera-placeholder {
+            background: linear-gradient(145deg, #f9fafb, #f3f4f6);
+            border: 3px dashed #d1d5db;
+            border-radius: 12px;
+            height: 350px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .pattern-overlay {
+            background-image: 
+                radial-gradient(circle at 20% 20%, rgba(251, 191, 36, 0.05) 0%, transparent 30%),
+                radial-gradient(circle at 80% 80%, rgba(120, 53, 15, 0.03) 0%, transparent 30%);
+        }
+        
+        .btn-elegant:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(120, 53, 15, 0.2);
+        }
+        
+        .log-container {
+            background: rgba(254, 252, 251, 0.8);
+            backdrop-filter: blur(5px);
+        }
+        
+        /* Enhanced Dropdown Styling */
+        .select-elegant {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2378350f' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+            background-position: right 12px center;
+            background-repeat: no-repeat;
+            background-size: 16px;
+            padding-right: 48px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .select-elegant:hover {
+            background-color: #fffbeb;
+            border-color: #d97706;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(120, 53, 15, 0.15);
+        }
+        
+        .select-elegant:focus {
+            background-color: #ffffff;
+            border-color: #92400e;
+            box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
+        }
+        
+        .select-elegant option {
+            background-color: #fffbeb;
+            color: #78350f;
+            padding: 12px;
+            border-radius: 8px;
+            margin: 2px 0;
+        }
+        
+        .select-elegant option:hover {
+            background-color: #fef3c7;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-amber-50 chess-board-pattern pattern-overlay">
+    <!-- Navigation Bar -->
+    <nav class="navbar-elegant border-b-2 border-amber-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="{{ url_for('admin_dashboard') }}" class="flex items-center text-amber-100 hover:text-white transition-colors duration-200">
+                        <i class="fas fa-arrow-left text-xl mr-3"></i>
+                        <span class="font-medium">Back to Admin Dashboard</span>
+                    </a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center">
+                        <i class="fas fa-monitor-heart-rate text-amber-100 mr-2"></i>
+                        <span class="text-white font-bold">Live Monitor - Match #{{ match.id }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Timer Monitor -->
+            <div class="space-y-6">
+                <div class="card-elegant rounded-2xl p-6 border-2 border-amber-200">
+                    <div class="flex justify-between items-center mb-6">
+                        <div class="flex items-center">
+                            <i class="fas fa-stopwatch text-2xl text-amber-800 mr-3"></i>
+                            <h2 class="text-xl font-bold text-amber-900">Timer Status</h2>
+                        </div>
+                        <div class="flex items-center">
+                            <span class="status-indicator" id="status-indicator"></span>
+                            <span class="ml-2 text-sm font-medium text-amber-800" id="status-text">Waiting</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Update bagian timer display HTML untuk menampilkan waktu sesuai mode -->
+                    <div class="grid grid-cols-2 gap-6 mb-6">
+                        <div class="text-center p-4 bg-amber-100 rounded-xl border-2 border-amber-300">
+                            <h3 class="text-lg font-bold text-amber-900 mb-2">{{ match.player1.username }}</h3>
+                            <div class="timer-display text-green-700" id="player1-time">
+                                {{ '{:d}:{:02d}'.format(match.initial_time // 60, match.initial_time % 60) }}
+                            </div>
+                            <div class="flex items-center justify-center mt-2">
+                                <i class="fas fa-chess-king text-amber-600 mr-2"></i>
+                                <span class="text-sm font-medium text-amber-700">Player 1</span>
+                            </div>
+                        </div>
+                        <div class="text-center p-4 bg-amber-100 rounded-xl border-2 border-amber-300">
+                            <h3 class="text-lg font-bold text-amber-900 mb-2">{{ match.player2.username }}</h3>
+                            <div class="timer-display text-blue-700" id="player2-time">
+                                {{ '{:d}:{:02d}'.format(match.initial_time // 60, match.initial_time % 60) }}
+                            </div>
+                            <div class="flex items-center justify-center mt-2">
+                                <i class="fas fa-chess-queen text-amber-600 mr-2"></i>
+                                <span class="text-sm font-medium text-amber-700">Player 2</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-amber-200 rounded-xl p-4 text-center">
+                        <div class="flex items-center justify-center mb-2">
+                            <i class="fas fa-user-clock text-amber-800 mr-2"></i>
+                            <strong class="text-amber-900">Current Turn: <span id="current-turn">{{ match.player1.username }}</span></strong>
+                        </div>
+                        <div class="flex items-center justify-center">
+                            <i class="fas fa-info-circle text-amber-700 mr-2"></i>
+                            <small class="text-amber-800">Status: <span id="game-status">Waiting</span></small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Timer Controls -->
+                <div class="mt-6">
+                    <div class="grid grid-cols-3 gap-3">
+                        <button 
+                            class="btn-elegant bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-xl font-bold text-sm transition-all duration-200 flex items-center justify-center"
+                            onclick="adminStartTimer()">
+                            <i class="fas fa-play mr-2"></i>START
+                        </button>
+                        <button 
+                            class="btn-elegant bg-yellow-600 hover:bg-yellow-700 text-white py-3 px-4 rounded-xl font-bold text-sm transition-all duration-200 flex items-center justify-center"
+                            onclick="adminPauseTimer()">
+                            <i class="fas fa-pause mr-2"></i>PAUSE
+                        </button>
+                        <button 
+                            class="btn-elegant bg-red-600 hover:bg-red-700 text-white py-3 px-4 rounded-xl font-bold text-sm transition-all duration-200 flex items-center justify-center"
+                            onclick="adminResetTimer()">
+                            <i class="fas fa-redo mr-2"></i>RESET
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Match Info -->
+                <div class="card-elegant rounded-2xl p-6 border-2 border-amber-200">
+                    <div class="flex items-center mb-4">
+                        <i class="fas fa-info-circle text-2xl text-amber-800 mr-3"></i>
+                        <h3 class="text-lg font-bold text-amber-900">Match Information</h3>
+                    </div>
+                    <div class="space-y-3">
+                        <div class="flex justify-between items-center p-3 bg-amber-100 rounded-lg">
+                            <span class="font-semibold text-amber-800">Match ID:</span>
+                            <span class="bg-amber-200 px-3 py-1 rounded-full text-sm font-bold text-amber-900">#{{ match.id }}</span>
+                        </div>
+                        <!-- TAMBAHAN BARU - Time Control Info -->
+                        <div class="flex justify-between items-center p-3 bg-blue-100 rounded-lg">
+                            <span class="font-semibold text-blue-800">Time Control:</span>
+                            <span class="flex items-center text-blue-700">
+                                <i class="fas fa-stopwatch mr-2"></i>
+                                <span class="bg-blue-200 px-3 py-1 rounded-full text-sm font-bold text-blue-900">
+                                    {{ match.time_control.upper() }} ({{ (match.initial_time // 60) }}+{{ match.increment }})
+                                </span>
+                            </span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-amber-100 rounded-lg">
+                            <span class="font-semibold text-amber-800">Created:</span>
+                            <span class="text-amber-700">{{ match.date_created.strftime('%Y-%m-%d %H:%M') }}</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-amber-100 rounded-lg">
+                            <span class="font-semibold text-amber-800">Player 1:</span>
+                            <span class="flex items-center text-amber-700">
+                                <i class="fas fa-chess-king mr-2"></i>{{ match.player1.username }}
+                            </span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-amber-100 rounded-lg">
+                            <span class="font-semibold text-amber-800">Player 2:</span>
+                            <span class="flex items-center text-amber-700">
+                                <i class="fas fa-chess-queen mr-2"></i>{{ match.player2.username }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+           <!-- Camera Detection Section -->
+            <div class="space-y-6">
+                <div class="card-elegant rounded-2xl p-6 border-2 border-amber-200">
+                    <div class="flex justify-between items-center mb-6">
+                        <div class="flex items-center">
+                            <i class="fas fa-camera text-2xl text-amber-800 mr-3"></i>
+                            <h2 class="text-xl font-bold text-amber-900">Live Chess Detection</h2>
+                        </div>
+                        <button 
+                            class="btn-elegant bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm transition-all duration-200 flex items-center"
+                            onclick="toggleFullscreen()">
+                            <i class="fas fa-expand mr-2"></i>Fullscreen
+                        </button>
+                    </div>
+                    
+                    <!-- Camera Selection -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-semibold text-amber-800 mb-2">Select Camera:</label>
+                        <select id="camera-select" class="w-full p-3 border-2 border-amber-300 rounded-lg bg-amber-50 text-amber-900 focus:border-amber-500 focus:outline-none select-elegant">
+                            <option value="">Select Camera</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Detection Mode -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-semibold text-amber-800 mb-2">Detection Mode:</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="flex items-center p-3 border-2 border-amber-300 rounded-lg cursor-pointer hover:bg-amber-100 transition-colors">
+                                <input type="radio" name="detection-mode" value="raw" checked class="mr-3 text-amber-600">
+                                <span class="font-medium text-amber-800">Raw</span>
+                            </label>
+                            <label class="flex items-center p-3 border-2 border-amber-300 rounded-lg cursor-pointer hover:bg-amber-100 transition-colors">
+                                <input type="radio" name="detection-mode" value="clahe" class="mr-3 text-amber-600">
+                                <span class="font-medium text-amber-800">CLAHE</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Show Bounding Box Toggle -->
+                    <div class="mb-6">
+                        <label class="flex items-center p-3 bg-amber-100 rounded-lg cursor-pointer">
+                            <input type="checkbox" id="show-bbox" checked class="mr-3 text-amber-600">
+                            <span class="font-medium text-amber-800">Show Bounding Boxes</span>
+                        </label>
+                    </div>
+                    
+                    <!-- Camera Feed Display -->
+                    <div class="mt-6">
+                        <div class="bg-amber-100 border-2 border-amber-300 rounded-xl p-6 text-center">
+                            <i class="fas fa-desktop fa-3x text-amber-600 mb-4"></i>
+                            <h3 class="text-lg font-bold text-amber-800 mb-2">OpenCV Detection Window</h3>
+                            <p class="text-amber-700 mb-4">Detection will open in a separate OpenCV window with real-time processing.</p>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                                <div class="bg-white rounded-lg p-3">
+                                    <strong class="text-amber-800">Controls:</strong><br>
+                                    <span class="text-amber-600">Press 'q' to quit<br>Space to toggle bbox<br>'m' to toggle mode</span>
+                                </div>
+                                <div class="bg-white rounded-lg p-3">
+                                    <strong class="text-amber-800">Features:</strong><br>
+                                    <span class="text-amber-600">Real-time detection<br>720x720 crop<br>CLAHE preprocessing</span>
+                                </div>
+                                <div class="bg-white rounded-lg p-3">
+                                    <strong class="text-amber-800">Settings:</strong><br>
+                                    <span class="text-amber-600">Auto-sync with web<br>Live configuration<br>WebSocket updates</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Control Buttons -->
+                    <div class="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        <button 
+                            class="btn-elegant bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 flex items-center justify-center"
+                            onclick="startDetection()">
+                            <i class="fas fa-external-link-alt mr-2"></i>Start OpenCV
+                        </button>
+                        <button 
+                            class="btn-elegant bg-red-600 hover:bg-red-700 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 flex items-center justify-center"
+                            onclick="pauseDetection()">
+                            <i class="fas fa-stop mr-2"></i>Stop OpenCV
+                        </button>
+                        <button 
+                            class="btn-elegant bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 flex items-center justify-center"
+                            onclick="toggleFullscreen()">
+                            <i class="fas fa-expand mr-2"></i>Fullscreen
+                        </button>
+                        <button 
+                            class="btn-elegant bg-purple-600 hover:bg-purple-700 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 flex items-center justify-center"
+                            onclick="testDetection()">
+                            <i class="fas fa-bug mr-2"></i>Test API
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        <!-- Action Log -->
+        <div class="mt-8">
+            <div class="card-elegant rounded-2xl p-6 border-2 border-amber-200">
+                <div class="flex items-center mb-6">
+                    <i class="fas fa-list-alt text-2xl text-amber-800 mr-3"></i>
+                    <h2 class="text-xl font-bold text-amber-900">Action Log</h2>
+                </div>
+                <div class="log-container rounded-xl border-2 border-amber-200 p-4 h-80 overflow-y-auto">
+                    <div id="action-log" class="text-sm">
+                        <div class="flex items-center text-amber-600">
+                            <i class="fas fa-play-circle mr-2"></i>
+                            <span>Monitoring started...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Tambahkan section Move History setelah Action Log -->
+<!-- Move History Section -->
+<div class="mt-8">
+    <div class="card-elegant rounded-2xl p-6 border-2 border-amber-200">
+        <div class="flex justify-between items-center mb-6">
+            <div class="flex items-center">
+                <i class="fas fa-chess-board text-2xl text-amber-800 mr-3"></i>
+                <h2 class="text-xl font-bold text-amber-900">Move History</h2>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button 
+                    class="btn-elegant bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm transition-all duration-200 flex items-center"
+                    onclick="refreshMoveHistory()">
+                    <i class="fas fa-sync-alt mr-2"></i>Refresh
+                </button>
+                <button 
+                    class="btn-elegant bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm transition-all duration-200 flex items-center"
+                    onclick="exportMoveHistory()">
+                    <i class="fas fa-download mr-2"></i>Export PGN
+                </button>
+            </div>
+        </div>
+        
+        <!-- Move Statistics -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-amber-100 rounded-xl p-4 text-center">
+                <div class="text-2xl font-bold text-amber-800" id="total-moves">0</div>
+                <div class="text-sm text-amber-600">Total Moves</div>
+            </div>
+            <div class="bg-green-100 rounded-xl p-4 text-center">
+                <div class="text-2xl font-bold text-green-800" id="white-moves">0</div>
+                <div class="text-sm text-green-600">White Moves</div>
+            </div>
+            <div class="bg-blue-100 rounded-xl p-4 text-center">
+                <div class="text-2xl font-bold text-blue-800" id="black-moves">0</div>
+                <div class="text-sm text-blue-600">Black Moves</div>
+            </div>
+            <div class="bg-purple-100 rounded-xl p-4 text-center">
+                <div class="text-2xl font-bold text-purple-800" id="game-progress">0%</div>
+                <div class="text-sm text-purple-600">Game Progress</div>
+            </div>
+        </div>
+        
+        <!-- Move History Table -->
+        <div class="bg-white rounded-xl border-2 border-amber-200 overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-amber-100">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">Move #</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">Player</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">UCI Move</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">Chess Notation</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">Time</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">Status</th>
+                            <th class="px-4 py-3 text-left text-sm font-bold text-amber-800">FEN</th>
+                        </tr>
+                    </thead>
+                    <tbody id="move-history-table" class="divide-y divide-amber-200">
+                        <!-- Move rows will be populated by JavaScript -->
+                        <tr>
+                            <td colspan="7" class="px-4 py-8 text-center text-amber-600">
+                                <i class="fas fa-chess-pawn text-3xl mb-2"></i>
+                                <div>No moves recorded yet</div>
+                                <div class="text-sm">Moves will appear here as the game progresses</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Current Position Display -->
+        <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="bg-amber-50 rounded-xl p-4">
+                <h4 class="font-bold text-amber-800 mb-2 flex items-center">
+                    <i class="fas fa-eye mr-2"></i>Current Position (FEN)
+                </h4>
+                <div class="bg-white p-3 rounded-lg border border-amber-200">
+                    <code id="current-fen" class="text-sm text-gray-700 break-all">
+                        rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+                    </code>
+                </div>
+                <button 
+                    class="mt-2 text-sm text-amber-600 hover:text-amber-800 flex items-center"
+                    onclick="copyFEN()">
+                    <i class="fas fa-copy mr-1"></i>Copy FEN
+                </button>
+            </div>
+            <div class="bg-amber-50 rounded-xl p-4">
+                <h4 class="font-bold text-amber-800 mb-2 flex items-center">
+                    <i class="fas fa-list mr-2"></i>Game Notation (PGN)
+                </h4>
+                <div class="bg-white p-3 rounded-lg border border-amber-200 h-32 overflow-y-auto">
+                    <div id="pgn-notation" class="text-sm text-gray-700 font-mono">
+                        Game not started
+                    </div>
+                </div>
+                <button 
+                    class="mt-2 text-sm text-amber-600 hover:text-amber-800 flex items-center"
+                    onclick="copyPGN()">
+                    <i class="fas fa-copy mr-1"></i>Copy PGN
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+    </div>
+
+    <script>
+        // Socket.IO Connection - Jinja2 Template Variables
+        const socket = io();
+        // This is a Jinja2 template variable, not JavaScript
+        const matchId = parseInt('{{ match.id }}');
+
+        // Join match room
+        socket.emit('join_match', {match_id: matchId});
+
+        // Format time
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // Log actions
+        function logAction(message) {
+            const log = document.getElementById('action-log');
+            const time = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = 'flex items-start mb-2 text-amber-700';
+            logEntry.innerHTML = `
+                <i class="fas fa-clock mr-2 mt-1 text-amber-500"></i>
+                <span class="text-xs font-mono text-amber-600">[${time}]</span>
+                <span class="ml-2">${message}</span>
+            `;
+            log.appendChild(logEntry);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Update display
+        function updateDisplay(data) {
+            document.getElementById('player1-time').textContent = formatTime(data.player1_time);
+            document.getElementById('player2-time').textContent = formatTime(data.player2_time);
+            
+            const currentTurn = data.current_player === 1 ? '{{ match.player1.username }}' : '{{ match.player2.username }}';
+            document.getElementById('current-turn').textContent = currentTurn;
+            
+            const status = data.is_active ? 'Active' : 'Paused';
+            document.getElementById('game-status').textContent = status;
+            document.getElementById('status-text').textContent = status;
+            
+            const indicator = document.getElementById('status-indicator');
+            indicator.className = 'status-indicator ' + (data.is_active ? 'status-active' : 'status-paused');
+            
+            // Update time control info jika ada
+            if (data.time_control && data.initial_time) {
+                const timeControlInfo = getTimeControlDisplay(data.time_control, data.initial_time, data.increment);
+                // Update display time control info jika diperlukan
+            }
+        }
+
+        // Tambahkan function untuk menampilkan info time control
+        function getTimeControlDisplay(timeControl, initialTime, increment) {
+            const minutes = Math.floor(initialTime / 60);
+            return `${timeControl.toUpperCase()} (${minutes}+${increment})`;
+        }
+
+        // Update admin reset function
+        function adminResetTimer() {
+            socket.emit('admin_control', {
+                match_id: matchId,
+                action: 'reset'
+            });
+            logAction('Admin reset to {{ match.time_control.upper() }} mode ({{ (match.initial_time // 60) }}+{{ match.increment }} seconds)');
+        }
+
+        let videoStream = null;
+        let detectionInterval = null;
+        let isDetecting = false;
+        let hasPermission = false;
+
+        // Request camera permission first
+        async function requestCameraPermission() {
+            try {
+                logAction('Requesting camera permission...');
+                
+                // Request basic camera access to get permission
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: false 
+                });
+                
+                // Stop the stream immediately, we just needed permission
+                stream.getTracks().forEach(track => track.stop());
+                
+                hasPermission = true;
+                logAction('Camera permission granted');
+                
+                // Now get the actual camera list
+                await getCameras();
+                
+                return true;
+            } catch (error) {
+                hasPermission = false;
+                logAction('Camera permission denied: ' + error.message);
+                
+                if (error.name === 'NotAllowedError') {
+                    alert('Camera access denied. Please allow camera access and refresh the page.');
+                } else if (error.name === 'NotFoundError') {
+                    alert('No camera found. Please connect a camera and refresh the page.');
+                } else {
+                    alert('Error accessing camera: ' + error.message);
+                }
+                
+                return false;
+            }
+        }
+
+        // Get available cameras (after permission granted)
+        async function getCameras() {
+            if (!hasPermission) {
+                logAction('Camera permission required');
+                return;
+            }
+
+            try {
+                logAction('Scanning for available cameras...');
+                
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                const select = document.getElementById('camera-select');
+                
+                select.innerHTML = '<option value="">Select Camera</option>';
+                
+                if (videoDevices.length === 0) {
+                    logAction('No cameras found');
+                    alert('No cameras detected. Please connect a camera and try again.');
+                    return;
+                }
+                
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    // Show device label if available, otherwise use generic name
+                    option.text = device.label || `Camera ${index + 1}`;
+                    select.appendChild(option);
+                    
+                    logAction(`Found camera: ${device.label || `Camera ${index + 1}`}`);
+                });
+                
+                logAction(`Total ${videoDevices.length} camera(s) detected`);
+                
+            } catch (error) {
+                logAction('Error scanning cameras: ' + error.message);
+                console.error('Error getting cameras:', error);
+            }
+        }
+
+        // Start camera
+        async function startCamera() {
+            const cameraSelect = document.getElementById('camera-select');
+            const deviceId = cameraSelect.value;
+            
+            if (!hasPermission) {
+                logAction('Requesting camera permission first...');
+                const granted = await requestCameraPermission();
+                if (!granted) return;
+            }
+            
+            if (!deviceId) {
+                alert('Please select a camera first');
+                return;
+            }
+            
+            try {
+                logAction('Starting camera...');
+                
+                // Stop existing stream if any
+                if (videoStream) {
+                    videoStream.getTracks().forEach(track => track.stop());
+                }
+                
+                const constraints = {
+                    video: {
+                        deviceId: { exact: deviceId },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                };
+                
+                videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+                const video = document.getElementById('camera-feed');
+                
+                video.srcObject = videoStream;
+                video.classList.remove('hidden'); // Ganti dari 'd-none' ke 'hidden'
+                document.getElementById('camera-placeholder').classList.add('hidden');
+                
+                // Wait for video to load
+                video.onloadedmetadata = () => {
+                    logAction(`Camera started: ${video.videoWidth}x${video.videoHeight}`);
+                };
+                
+            } catch (error) {
+                logAction('Error starting camera: ' + error.message);
+                console.error('Error starting camera:', error);
+                
+                if (error.name === 'NotAllowedError') {
+                    alert('Camera access denied. Please allow camera access.');
+                } else if (error.name === 'NotFoundError') {
+                    alert('Selected camera not found. Please try another camera.');
+                } else if (error.name === 'NotReadableError') {
+                    alert('Camera is being used by another application.');
+                } else {
+                    alert('Error starting camera: ' + error.message);
+                }
+            }
+        }
+
+        // Start detection
+        function startDetection() {
+            const cameraSelect = document.getElementById('camera-select');
+            const deviceId = cameraSelect.value;
+            
+            if (!deviceId) {
+                alert('Please select a camera first');
+                return;
+            }
+            
+            // Get camera index from device list
+            const cameraIndex = Array.from(cameraSelect.options).findIndex(option => option.value === deviceId) - 1;
+            
+            if (cameraIndex < 0) {
+                alert('Invalid camera selection');
+                return;
+            }
+            
+            // Get detection settings
+            const mode = document.querySelector('input[name="detection-mode"]:checked').value;
+            const showBbox = document.getElementById('show-bbox').checked;
+            
+            logAction(`Starting OpenCV detection with Camera ${cameraIndex}, Mode: ${mode}, BBox: ${showBbox}`);
+            
+            // Send via Socket.IO for real-time updates
+            socket.emit('start_opencv_detection', {
+                camera_index: cameraIndex,
+                mode: mode,
+                show_bbox: showBbox
+            });
+            
+            // Also update via HTTP API
+            fetch('/api/start_opencv_detection', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    camera_index: cameraIndex,
+                    mode: mode,
+                    show_bbox: showBbox
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.status === 'success') {
+                    logAction('OpenCV detection started successfully');
+                    updateDetectionButtons(true);
+                } else {
+                    logAction('Error starting detection: ' + result.error);
+                    alert('Error starting detection: ' + result.error);
+                }
+            })
+            .catch(error => {
+                logAction('Error starting detection: ' + error.message);
+                console.error('Error starting detection:', error);
+            });
+        }
+
+        // Stop camera
+        function stopCamera() {
+            pauseDetection();
+            
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            
+            document.getElementById('camera-feed').classList.add('hidden');
+            document.getElementById('detection-canvas').classList.add('hidden');
+            document.getElementById('camera-placeholder').classList.remove('hidden');
+            
+            logAction('Camera stopped');
+        }
+
+        // Test detection button untuk debugging
+        function testDetection() {
+            const canvas = document.getElementById('detection-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Create a test image
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, 100, 100);
+            
+            const testImageData = canvas.toDataURL('image/jpeg', 0.8);
+            
+            fetch('/api/detect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image: testImageData,
+                    mode: 'raw',
+                    show_bbox: true
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                console.log('Test detection result:', result);
+                logAction('Test detection completed: ' + JSON.stringify(result));
+            })
+            .catch(error => {
+                console.error('Test detection error:', error);
+                logAction('Test detection error: ' + error.message);
+            });
+        }
+
+        // Tambahkan tombol test di HTML (temporary untuk debugging)
+        const testButton = document.createElement('button');
+        testButton.innerText = 'Test Detection';
+        testButton.onclick = testDetection;
+        document.body.appendChild(testButton);
+
+        // Fullscreen toggle
+        function toggleFullscreen() {
+            const canvas = document.getElementById('detection-canvas');
+            const video = document.getElementById('camera-feed');
+            
+            const element = canvas.classList.contains('d-none') ? video : canvas;
+            
+            if (!document.fullscreenElement) {
+                element.requestFullscreen().then(() => {
+                    logAction('Entered fullscreen mode');
+                }).catch(err => {
+                    logAction('Error entering fullscreen: ' + err.message);
+                });
+            } else {
+                document.exitFullscreen().then(() => {
+                    logAction('Exited fullscreen mode');
+                });
+            }
+        }
+
+        // Admin timer controls
+        function adminStartTimer() {
+            socket.emit('admin_control', {
+                match_id: matchId,
+                action: 'start'
+            });
+            logAction('Admin started {{ match.time_control }} timer');
+        }
+
+        function adminPauseTimer() {
+            socket.emit('admin_control', {
+                match_id: matchId,
+                action: 'pause'
+            });
+            logAction('Admin paused {{ match.time_control }} timer');
+        }
+
+        function adminResetTimer() {
+            socket.emit('admin_control', {
+                match_id: matchId,
+                action: 'reset'
+            });
+            logAction('Admin reset to {{ match.time_control.upper() }} mode ({{ (match.initial_time // 60) }}+{{ match.increment }} seconds)');
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            logAction('Page loaded, initializing...');
+            
+            // Check if camera API is supported
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                logAction('Camera API not supported in this browser');
+                alert('Camera access is not supported in this browser. Please use Chrome, Firefox, or Safari.');
+                return;
+            }
+            
+            // Auto-request permission and scan cameras
+            setTimeout(async () => {
+                logAction('Auto-requesting camera permission...');
+                await requestCameraPermission();
+            }, 1000);
+        });
+
+        // Socket listeners
+        socket.on('timer_sync', function(data) {
+            updateDisplay(data);
+            // Log dengan info time control
+            if (data.time_control && data.initial_time) {
+                const timeInfo = `${data.time_control.toUpperCase()} (${Math.floor(data.initial_time / 60)}+${data.increment || 0})`;
+                logAction(`Timer sync [${timeInfo}] - Player ${data.current_player}: ${formatTime(data.current_player === 1 ? data.player1_time : data.player2_time)}`);
+            }
+        });
+
+        socket.on('player_switched', function(data) {
+            const playerName = data.current_player === 1 ? '{{ match.player1.username }}' : '{{ match.player2.username }}';
+            logAction(`Turn switched to ${playerName}`);
+        });
+
+        // Initialize with current session data
+        fetch(`/api/session/${matchId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!data.error) {
+                    updateDisplay(data);
+                    logAction('Session data loaded');
+                }
+            })
+            .catch(error => {
+                logAction('Error loading session data: ' + error.message);
+            });
+
+        logAction('Admin monitoring started for Match #' + matchId);
+
+        // Handle page visibility change (pause detection when tab not active)
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden && isDetecting) {
+                pauseDetection();
+                logAction('Detection paused (tab inactive)');
+            }
+        });
+
+        // Cleanup when page unloads
+        window.addEventListener('beforeunload', function() {
+            stopCamera();
+        });
+
+        // Update pauseDetection to stop OpenCV
+        function pauseDetection() {
+            logAction('Stopping OpenCV detection...');
+            
+            socket.emit('stop_opencv_detection');
+            
+            fetch('/api/stop_opencv_detection', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.status === 'success') {
+                    logAction('OpenCV detection stopped');
+                    updateDetectionButtons(false);
+                } else {
+                    logAction('Error stopping detection: ' + result.error);
+                }
+            })
+            .catch(error => {
+                logAction('Error stopping detection: ' + error.message);
+                console.error('Error stopping detection:', error);
+            });
+        }
+
+        // New function to update detection settings in real-time
+        function updateDetectionSettings() {
+            const cameraSelect = document.getElementById('camera-select');
+            const deviceId = cameraSelect.value;
+            const cameraIndex = Array.from(cameraSelect.options).findIndex(option => option.value === deviceId) - 1;
+            const mode = document.querySelector('input[name="detection-mode"]:checked').value;
+            const showBbox = document.getElementById('show-bbox').checked;
+            
+            if (cameraIndex >= 0) {
+                socket.emit('update_detection_config', {
+                    camera_index: cameraIndex,
+                    mode: mode,
+                    show_bbox: showBbox
+                });
+                
+                logAction(`Updated settings - Camera: ${cameraIndex}, Mode: ${mode}, BBox: ${showBbox}`);
+            }
+        }
+
+        // Function to update button states
+        function updateDetectionButtons(isActive) {
+            const startBtn = document.querySelector('button[onclick="startDetection()"]');
+            const stopBtn = document.querySelector('button[onclick="pauseDetection()"]');
+            
+            if (isActive) {
+                startBtn.disabled = true;
+                startBtn.classList.add('opacity-50');
+                stopBtn.disabled = false;
+                stopBtn.classList.remove('opacity-50');
+            } else {
+                startBtn.disabled = false;
+                startBtn.classList.remove('opacity-50');
+                stopBtn.disabled = true;
+                stopBtn.classList.add('opacity-50');
+            }
+        }
+
+        // Add event listeners for real-time settings update
+        document.addEventListener('DOMContentLoaded', function() {
+            // Update settings when camera selection changes
+            document.getElementById('camera-select').addEventListener('change', updateDetectionSettings);
+            
+            // Update settings when detection mode changes
+            document.querySelectorAll('input[name="detection-mode"]').forEach(radio => {
+                radio.addEventListener('change', updateDetectionSettings);
+            });
+            
+            // Update settings when bounding box toggle changes
+            document.getElementById('show-bbox').addEventListener('change', updateDetectionSettings);
+            
+            // Check detection status on page load
+            fetch('/api/detection_status')
+                .then(response => response.json())
+                .then(data => {
+                    updateDetectionButtons(data.is_active);
+                    if (data.is_active) {
+                        logAction(`Detection already running - Camera: ${data.camera_index}, Mode: ${data.mode}`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking detection status:', error);
+                });
+        });
+
+        // Socket.IO listeners for OpenCV detection
+        socket.on('opencv_detection_started', function(data) {
+            logAction(`OpenCV detection started - Camera: ${data.camera_index}, Mode: ${data.mode}, BBox: ${data.show_bbox}`);
+            updateDetectionButtons(true);
+        });
+
+        socket.on('opencv_detection_stopped', function() {
+            logAction('OpenCV detection stopped');
+            updateDetectionButtons(false);
+        });
+
+        socket.on('detection_config_updated', function(data) {
+            logAction(`Detection settings updated - Camera: ${data.camera_index}, Mode: ${data.mode}, BBox: ${data.show_bbox}`);
+        });
+
+        socket.on('error', function(data) {
+            logAction('Error: ' + data.message);
+            alert('Error: ' + data.message);
+        });
+
+        // Remove the old browser-based detection functions
+        // (Remove startCamera, video handling, canvas drawing functions)
+
+        // Update the control buttons text
+        function updateControlButtonsText() {
+            const startBtn = document.querySelector('button[onclick="startDetection()"]');
+            const stopBtn = document.querySelector('button[onclick="pauseDetection()"]');
+            
+            if (startBtn) {
+                startBtn.innerHTML = '<i class="fas fa-external-link-alt mr-2"></i>Start OpenCV';
+            }
+            if (stopBtn) {
+                stopBtn.innerHTML = '<i class="fas fa-stop mr-2"></i>Stop OpenCV';
+            }
+        }
+        let moveHistory = [];
+let currentFEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+// Load move history from server
+async function loadMoveHistory() {
+    try {
+        const response = await fetch(`/api/moves/${matchId}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            moveHistory = data.moves;
+            updateMoveHistoryDisplay();
+            updateMoveStatistics();
+            updateCurrentPosition();
+            generatePGN();
+            logAction(`Loaded ${moveHistory.length} moves from database`);
+        } else {
+            logAction('Error loading move history: ' + data.error);
+        }
+    } catch (error) {
+        logAction('Error loading move history: ' + error.message);
+        console.error('Error loading move history:', error);
+    }
+}
+
+// Update move history display
+function updateMoveHistoryDisplay() {
+    const tbody = document.getElementById('move-history-table');
+    
+    if (moveHistory.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" class="px-4 py-8 text-center text-amber-600">
+                    <i class="fas fa-chess-pawn text-3xl mb-2"></i>
+                    <div>No moves recorded yet</div>
+                    <div class="text-sm">Moves will appear here as the game progresses</div>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    tbody.innerHTML = moveHistory.map(move => {
+        const playerName = move.player === 1 ? '{{ match.player1.username }}' : '{{ match.player2.username }}';
+        const playerColor = move.player === 1 ? 'White' : 'Black';
+        const playerBadge = move.player === 1 ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800';
+        const playerIcon = move.player === 1 ? 'fa-chess-king' : 'fa-chess-queen';
+        
+        // Status
+        let statusBadge = '';
+        if (!move.fen_after) {
+            statusBadge = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs">In Progress</span>';
+        } else if (!move.uci_move) {
+            statusBadge = '<span class="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs">Detection Failed</span>';
+        } else {
+            statusBadge = '<span class="px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs">Completed</span>';
+        }
+        
+        // Chess notation (convert UCI to algebraic if possible)
+        const chessNotation = move.uci_move ? convertUCIToAlgebraic(move.uci_move) : '-';
+        
+        // Time formatting
+        const moveTime = move.timestamp ? new Date(move.timestamp).toLocaleTimeString() : '-';
+        
+        // FEN display (truncated)
+        const fenDisplay = move.fen_after ? 
+            `<code class="text-xs bg-gray-100 px-2 py-1 rounded cursor-pointer" onclick="showFullFEN('${move.fen_after}')" title="Click to view full FEN">
+                ${move.fen_after.substring(0, 20)}...
+            </code>` : 
+            '<span class="text-gray-400">-</span>';
+        
+        return `
+            <tr class="hover:bg-amber-50 transition-colors">
+                <td class="px-4 py-3 font-mono font-bold text-amber-800">${move.move_number}</td>
+                <td class="px-4 py-3">
+                    <div class="flex items-center">
+                        <span class="px-2 py-1 ${playerBadge} rounded-full text-xs mr-2">
+                            <i class="fas ${playerIcon} mr-1"></i>${playerColor}
+                        </span>
+                        <span class="text-sm text-gray-600">${playerName}</span>
+                    </div>
+                </td>
+                <td class="px-4 py-3">
+                    <code class="bg-blue-100 text-blue-800 px-2 py-1 rounded font-mono text-sm">
+                        ${move.uci_move || '-'}
+                    </code>
+                </td>
+                <td class="px-4 py-3 font-bold text-gray-800">${chessNotation}</td>
+                <td class="px-4 py-3 text-sm text-gray-600">${moveTime}</td>
+                <td class="px-4 py-3">${statusBadge}</td>
+                <td class="px-4 py-3">${fenDisplay}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// Update move statistics
+function updateMoveStatistics() {
+    const totalMoves = moveHistory.filter(m => m.uci_move).length;
+    const whiteMoves = moveHistory.filter(m => m.player === 1 && m.uci_move).length;
+    const blackMoves = moveHistory.filter(m => m.player === 2 && m.uci_move).length;
+    const gameProgress = Math.min(100, Math.round((totalMoves / 40) * 100)); // Assume 40 moves per game
+    
+    document.getElementById('total-moves').textContent = totalMoves;
+    document.getElementById('white-moves').textContent = whiteMoves;
+    document.getElementById('black-moves').textContent = blackMoves;
+    document.getElementById('game-progress').textContent = gameProgress + '%';
+}
+
+// Update current position
+function updateCurrentPosition() {
+    const lastMove = moveHistory.filter(m => m.fen_after).pop();
+    if (lastMove) {
+        currentFEN = lastMove.fen_after;
+        document.getElementById('current-fen').textContent = currentFEN;
+    }
+}
+
+// Convert UCI to algebraic notation (basic conversion)
+function convertUCIToAlgebraic(uci) {
+    if (!uci || uci.length < 4) return uci;
+    
+    const from = uci.substring(0, 2);
+    const to = uci.substring(2, 4);
+    const promotion = uci.length > 4 ? uci.substring(4) : '';
+    
+    // Basic conversion (this would need chess.js for proper conversion)
+    return `${from}-${to}${promotion ? '=' + promotion.toUpperCase() : ''}`;
+}
+
+// Generate PGN notation
+function generatePGN() {
+    const validMoves = moveHistory.filter(m => m.uci_move);
+    if (validMoves.length === 0) {
+        document.getElementById('pgn-notation').textContent = 'Game not started';
+        return;
+    }
+    
+    let pgn = '';
+    for (let i = 0; i < validMoves.length; i += 2) {
+        const moveNumber = Math.floor(i / 2) + 1;
+        const whiteMove = validMoves[i];
+        const blackMove = validMoves[i + 1];
+        
+        pgn += `${moveNumber}. ${convertUCIToAlgebraic(whiteMove.uci_move)}`;
+        if (blackMove) {
+            pgn += ` ${convertUCIToAlgebraic(blackMove.uci_move)}`;
+        }
+        pgn += ' ';
+    }
+    
+    document.getElementById('pgn-notation').textContent = pgn.trim();
+}
+
+// Utility functions
+function showFullFEN(fen) {
+    alert(`Full FEN: ${fen}`);
+}
+
+function copyFEN() {
+    navigator.clipboard.writeText(currentFEN).then(() => {
+        logAction('FEN copied to clipboard');
+    });
+}
+
+function copyPGN() {
+    const pgn = document.getElementById('pgn-notation').textContent;
+    navigator.clipboard.writeText(pgn).then(() => {
+        logAction('PGN copied to clipboard');
+    });
+}
+
+function refreshMoveHistory() {
+    logAction('Refreshing move history...');
+    loadMoveHistory();
+}
+
+function exportMoveHistory() {
+    const pgn = document.getElementById('pgn-notation').textContent;
+    const matchInfo = `[Event "ChessMon Match"]
+[Site "ChessMon System"]
+[Date "${new Date().toISOString().split('T')[0]}"]
+[Round "1"]
+[White "{{ match.player1.username }}"]
+[Black "{{ match.player2.username }}"]
+[Result "*"]
+
+${pgn}`;
+    
+    const blob = new Blob([matchInfo], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `match_${matchId}_moves.pgn`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    logAction('Move history exported as PGN');
+}
+
+// Socket listeners for real-time updates
+socket.on('move_completed', function(data) {
+    logAction(`Move completed: ${data.player === 1 ? '{{ match.player1.username }}' : '{{ match.player2.username }}'} - ${data.uci_move}`);
+    
+    // Add to local move history
+    const moveIndex = moveHistory.findIndex(m => m.move_number === data.move_number && m.player === data.player);
+    if (moveIndex >= 0) {
+        moveHistory[moveIndex] = { ...moveHistory[moveIndex], ...data };
+    } else {
+        moveHistory.push(data);
+    }
+    
+    // Update displays
+    updateMoveHistoryDisplay();
+    updateMoveStatistics();
+    updateCurrentPosition();
+    generatePGN();
+});
+
+        // Call on page load
+        document.addEventListener('DOMContentLoaded', ()=>{
+            updateControlButtonsText();
+            setTimeout(() => {
+                loadMoveHistory();
+            }, 1500);
+        });
+    </script>
+</body>
+</html>
