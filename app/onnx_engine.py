@@ -19,6 +19,69 @@ except ImportError:
     print("⚠️ ONNX Runtime not available, falling back to PyTorch")
 
 
+class YOLOResultWrapper:
+    """
+    Wrapper class to make ONNX results compatible with YOLO result format.
+    This ensures the detection code can work with both PyTorch and ONNX seamlessly.
+    """
+    def __init__(self, detections, orig_img, model_names=None):
+        self.boxes = YOLOBoxWrapper(detections, orig_img.shape)
+        self.orig_img = orig_img
+        self.model_names = model_names or {}
+        
+    def plot(self):
+        """Plot bounding boxes on image (YOLO-compatible method)."""
+        img = self.orig_img.copy()
+        for box in self.boxes.data:
+            x1, y1, x2, y2, conf, cls_id = box
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            cls_id = int(cls_id)
+            
+            # Draw rectangle
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            # Draw label
+            class_name = self.model_names.get(cls_id, f"Class_{cls_id}")
+            label = f"{class_name}: {conf:.2f}"
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+            
+            # Background for label
+            cv2.rectangle(img, (x1, y1 - label_size[1] - 10), 
+                        (x1 + label_size[0], y1), (0, 255, 0), -1)
+            
+            # Text label
+            cv2.putText(img, label, (x1, y1 - 5), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+        
+        return img
+
+
+class YOLOBoxWrapper:
+    """Wrapper for YOLO boxes to match expected interface."""
+    def __init__(self, detections, img_shape):
+        self.data = np.array(detections) if len(detections) > 0 else np.array([])
+        self.img_shape = img_shape
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return BoxItem(self.data[idx])
+    
+    def __iter__(self):
+        for i in range(len(self.data)):
+            yield BoxItem(self.data[i])
+
+
+class BoxItem:
+    """Individual box item wrapper."""
+    def __init__(self, data):
+        # data format: [x1, y1, x2, y2, confidence, class_id]
+        self.xyxy = np.array([[data[0], data[1], data[2], data[3]]])
+        self.conf = np.array([data[4]])
+        self.cls = np.array([data[5]])
+
+
 class ONNXInferenceEngine:
     """
     ONNX-based inference engine with PyTorch fallback.
@@ -36,11 +99,10 @@ class ONNXInferenceEngine:
         
         Args:
             onnx_path: Path to ONNX model file
-            pytorch_model: Fallback PyTorch model
+            pytorch_model: Fallback PyTorch model (path string or YOLO object)
             input_size: Model input size (default 720)
         """
         self.input_size = input_size
-        self.pytorch_model = pytorch_model
         self.session = None
         self.use_onnx = False
         
@@ -48,6 +110,18 @@ class ONNXInferenceEngine:
         self.inference_times = []
         self.onnx_count = 0
         self.pytorch_count = 0
+        
+        # Load PyTorch model if provided as path
+        if isinstance(pytorch_model, str):
+            try:
+                from ultralytics import YOLO
+                self.pytorch_model = YOLO(pytorch_model)
+                print(f"   Loaded PyTorch fallback model: {pytorch_model}")
+            except Exception as e:
+                print(f"   ⚠️ Could not load PyTorch fallback: {e}")
+                self.pytorch_model = None
+        else:
+            self.pytorch_model = pytorch_model
         
         # Try to load ONNX model
         if onnx_path and ONNX_AVAILABLE:
@@ -118,24 +192,28 @@ class ONNXInferenceEngine:
     
     def predict(self, image, conf_threshold=0.25):
         """
-        Run inference on image.
+        Run inference on image and return YOLO-compatible results.
         
         Args:
             image: Input image (BGR)
             conf_threshold: Confidence threshold for detections
         
         Returns:
-            list: Detection results
+            list: List containing single YOLOResultWrapper (YOLO-compatible format)
         """
         start_time = time.time()
+        orig_img = image.copy()
         
         try:
             if self.use_onnx and self.session:
                 # ONNX inference
-                results = self._predict_onnx(image, conf_threshold)
+                detections = self._predict_onnx(image, conf_threshold)
                 self.onnx_count += 1
+                # Wrap in YOLO-compatible format
+                result = YOLOResultWrapper(detections, orig_img, self._get_model_names())
+                results = [result]
             else:
-                # PyTorch fallback
+                # PyTorch fallback (already returns YOLO format)
                 results = self._predict_pytorch(image, conf_threshold)
                 self.pytorch_count += 1
             
@@ -151,14 +229,17 @@ class ONNXInferenceEngine:
             
         except Exception as e:
             print(f"⚠️ Inference error: {e}")
+            import traceback
+            traceback.print_exc()
             # Try PyTorch fallback if ONNX failed
             if self.use_onnx and self.pytorch_model:
                 print("   Trying PyTorch fallback...")
                 return self._predict_pytorch(image, conf_threshold)
-            return []
+            # Return empty YOLO-compatible result
+            return [YOLOResultWrapper([], orig_img, self._get_model_names())]
     
     def _predict_onnx(self, image, conf_threshold):
-        """ONNX inference."""
+        """ONNX inference - returns detections in [x1, y1, x2, y2, conf, cls] format."""
         # Preprocess
         input_tensor = self.preprocess(image)
         
@@ -180,7 +261,7 @@ class ONNXInferenceEngine:
                 continue
             
             # Extract bbox and class
-            x, y, w, h = detection[:4]
+            x_center, y_center, w, h = detection[:4]
             class_scores = detection[5:]
             class_id = np.argmax(class_scores)
             class_conf = class_scores[class_id]
@@ -189,34 +270,47 @@ class ONNXInferenceEngine:
             confidence = obj_conf * class_conf
             
             if confidence >= conf_threshold:
-                results.append({
-                    'bbox': [x, y, w, h],
-                    'class_id': int(class_id),
-                    'confidence': float(confidence)
-                })
+                # Convert from center format (x, y, w, h) to corner format (x1, y1, x2, y2)
+                x1 = x_center - w / 2
+                y1 = y_center - h / 2
+                x2 = x_center + w / 2
+                y2 = y_center + h / 2
+                
+                # Return in format expected by YOLOResultWrapper: [x1, y1, x2, y2, conf, cls]
+                results.append([
+                    float(x1), float(y1), float(x2), float(y2),
+                    float(confidence), float(class_id)
+                ])
         
         return results
     
     def _predict_pytorch(self, image, conf_threshold):
-        """PyTorch fallback inference."""
+        """PyTorch fallback inference - returns YOLO result objects directly."""
         if self.pytorch_model is None:
-            return []
+            # Return empty YOLO-compatible result
+            return [YOLOResultWrapper([], image, self._get_model_names())]
         
-        # Use YOLO's built-in predict
+        # Use YOLO's built-in predict (returns native YOLO results)
         results = self.pytorch_model(image, conf=conf_threshold, verbose=False)
         
-        # Convert to standard format
-        detections = []
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                detections.append({
-                    'bbox': box.xywh[0].cpu().numpy().tolist(),
-                    'class_id': int(box.cls[0]),
-                    'confidence': float(box.conf[0])
-                })
-        
-        return detections
+        # Return directly - already in YOLO format
+        return results
+    
+    def _get_model_names(self):
+        """Get class names from model."""
+        if self.pytorch_model and hasattr(self.pytorch_model, 'names'):
+            return self.pytorch_model.names
+        # Default chess piece names if model not available
+        return {
+            0: 'white-pawn', 1: 'white-rook', 2: 'white-knight',
+            3: 'white-bishop', 4: 'white-queen', 5: 'white-king',
+            6: 'black-pawn', 7: 'black-rook', 8: 'black-knight',
+            9: 'black-bishop', 10: 'black-queen', 11: 'black-king'
+        }
+    
+    def infer(self, image, conf_threshold=0.25):
+        """Alias for predict() to maintain compatibility with calling code."""
+        return self.predict(image, conf_threshold)
     
     def get_average_inference_time(self):
         """Get average inference time in ms."""

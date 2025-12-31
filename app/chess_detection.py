@@ -647,6 +647,9 @@ class ChessDetectionService:
             start_time = time.time()
             last_frame_time = time.time()
             
+            # Initialize display frame cache
+            self.last_display_frame = None
+            
             print(f"\n▶️  Starting detection loop...")
             print(f"   Press 'Q' in OpenCV window to stop\n")
             
@@ -720,37 +723,40 @@ class ChessDetectionService:
                 frame_count = 0
                 self.fps_counter += 1
                 
-                # **CRITICAL: Display raw frame FIRST before heavy processing**
-                # This keeps window responsive even if detection is slow
-                try:
-                    cv2.imshow('Chess Detection - ChessMon', frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q'):
-                        print("Quit requested by user")
-                        break
-                except Exception as e:
-                    print(f"Window display error: {e}")
-                    break
+                # ALWAYS crop to square first for consistent size (prevent melebar-mengecil)
+                frame_square = self.crop_to_square(frame, 720)
+                if frame_square is None:
+                    frame_square = frame
                 
                 # Process frame for detection (heavy operation)
+                # IMPORTANT: Process FIRST, then display ONCE to avoid race condition
                 try:
-                    # Skip heavy processing every other frame to keep UI responsive
-                    if loop_iteration % 2 == 0:  # Only process every 2nd frame
-                        processed_frame = self.detect_pieces_realtime(frame)
+                    # Skip YOLO inference every other frame, but ALWAYS process & add overlay
+                    if loop_iteration % 2 == 0:  # Run full detection
+                        processed_frame = self.detect_pieces_realtime(frame_square)
                         
                         if processed_frame is None:
-                            print("⚠️ Processing returned None, using original frame")
-                            processed_frame = frame
+                            print("⚠️ Processing returned None, using cropped frame")
+                            processed_frame = frame_square
                         
+                        # ALWAYS add overlay for consistency
                         display_frame = self._add_info_overlay(processed_frame)
+                        # Cache for next iteration
+                        self.last_display_frame = display_frame
                     else:
-                        # Use previous frame or original frame
-                        display_frame = frame
+                        # Use cached frame if available, otherwise process without inference
+                        if hasattr(self, 'last_display_frame') and self.last_display_frame is not None:
+                            display_frame = self.last_display_frame
+                        else:
+                            # Fallback: add overlay to raw frame (no inference)
+                            display_frame = self._add_info_overlay(frame_square)
+                            self.last_display_frame = display_frame
                 except Exception as e:
                     print(f"⚠️ Frame processing error: {e}")
                     import traceback
                     traceback.print_exc()
-                    display_frame = frame
+                    # Fallback: add overlay to cropped frame
+                    display_frame = self._add_info_overlay(frame_square)
                 
                 # Display processed frame
                 try:
@@ -851,12 +857,16 @@ class ChessDetectionService:
             display_frame = frame.copy()
             h, w = display_frame.shape[:2]
             
-            # Calculate FPS
+            # Calculate FPS with smoothing to prevent flickering
             current_time = time.time()
-            if hasattr(self, 'last_fps_time'):
-                fps = 1.0 / (current_time - self.last_fps_time) if (current_time - self.last_fps_time) > 0 else 0
+            if hasattr(self, 'last_fps_time') and hasattr(self, 'fps_smoothed'):
+                instant_fps = 1.0 / (current_time - self.last_fps_time) if (current_time - self.last_fps_time) > 0 else 0
+                # Smooth FPS with exponential moving average
+                self.fps_smoothed = 0.9 * self.fps_smoothed + 0.1 * instant_fps
+                fps = self.fps_smoothed
             else:
                 fps = 0
+                self.fps_smoothed = 0
             self.last_fps_time = current_time
             
             # Background for text (increased size for analysis info)
@@ -960,11 +970,9 @@ class ChessDetectionService:
             return image
             
         try:
+            # Image is already cropped to square by main loop, just process it
             input_image = image.copy()
-            processed_image = self.crop_to_square(input_image, 720)
-            
-            if processed_image is None:
-                return image
+            processed_image = input_image
             
             if self.detection_mode == 'clahe':
                 processed_image = self.apply_clahe(processed_image)
@@ -974,7 +982,7 @@ class ChessDetectionService:
             board_grid_coords = None
             flattened_board = None
             
-            if self.board_detection_enabled and self.fps_counter % 10 == 0:  # Every 10th frame
+            if self.board_detection_enabled and self.fps_counter % 60 == 0:  # Every 60th frame (~2 seconds)
                 board_corners, _, board_grid_coords, flattened_board = self.detect_chessboard(processed_image)
                 self.board_corners = board_corners
                 self.grid_points = board_grid_coords
@@ -990,12 +998,25 @@ class ChessDetectionService:
             
             if self.fps_counter % 3 == 0:
                 # Lower confidence threshold for better detection
-                if self.model is not None:
-                    results = self.model(processed_image, conf=0.15, verbose=False)
-                elif self.inference_engine is not None:
-                    results = self.inference_engine.infer(processed_image, conf_threshold=0.15)
-                else:
-                    print("⚠️ WARNING: No model loaded (neither PyTorch nor ONNX)!")
+                inference_start = time.time()
+                try:
+                    if self.model is not None:
+                        results = self.model(processed_image, conf=0.15, verbose=False)
+                    elif self.inference_engine is not None:
+                        results = self.inference_engine.infer(processed_image, conf_threshold=0.15)
+                    else:
+                        print("⚠️ WARNING: No model loaded (neither PyTorch nor ONNX)!")
+                        return image
+                    
+                    # Check inference time - warn if too slow
+                    inference_time = time.time() - inference_start
+                    if inference_time > 0.5:  # More than 500ms is too slow
+                        print(f"⚠️ Slow inference detected: {inference_time*1000:.0f}ms")
+                except Exception as e:
+                    print(f"⚠️ Inference error: {e}")
+                    # Use cached result or return original image
+                    if hasattr(self, 'last_detection_result'):
+                        return self.last_detection_result
                     return image
                 
                 if len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
