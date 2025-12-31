@@ -533,6 +533,11 @@ class ChessDetectionService:
     
     def _detection_loop(self):
         """Main detection loop running in separate thread"""
+        print(f"\n▶️  DETECTION LOOP STARTED")
+        print(f"   Thread ID: {threading.current_thread().name}")
+        print(f"   Camera Index: {self.camera_index}")
+        print(f"   Mode: {self.detection_mode}")
+        
         try:
             print(f"\n🎥 Opening camera index: {self.camera_index}")
             
@@ -583,47 +588,76 @@ class ChessDetectionService:
                 return
             
             # Configure camera with error handling
+            # ⚠️ IMPORTANT: Skip property setting for virtual cameras (OBS, DroidCam)
+            # Setting properties can cause crashes with virtual camera sources
             try:
-                # Set buffer size to 1 to reduce latency
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
-                # Set resolution
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                
-                # Set FPS
-                self.cap.set(cv2.CAP_PROP_FPS, 30)
-                
-                # Disable auto-exposure for better performance (if supported)
-                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                # Only set properties for real hardware cameras (index 0-2)
+                if self.camera_index <= 2:
+                    # Set buffer size to 1 to reduce latency
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    
+                    # Set resolution (skip for virtual cameras)
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    
+                    # Set FPS
+                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+                else:
+                    print(f"   ℹ️ Virtual camera detected (index {self.camera_index}), using default properties")
                 
             except Exception as e:
-                print(f"Warning: Could not set camera properties: {e}")
+                print(f"   ⚠️ Warning: Could not set camera properties: {e}")
             
-            # Get actual camera properties
-            # actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            # actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            # actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            print(f"\n✅ Camera {self.camera_index} configured successfully!")
+            print(f"   Proceeding to window creation...")
             
-            # print(f"Camera {self.camera_index} opened successfully")
-            # print(f"Resolution: {actual_width}x{actual_height}")
-            # print(f"FPS: {actual_fps}")
-            # print(f"Detection mode: {self.detection_mode}")
-            # print(f"Show bounding boxes: {self.show_bbox}")
-            # print(f"Show board grid: {self.show_board_grid}")
-            # print("Controls: 'q' to quit, 'space' to toggle bbox, 'm' to toggle mode, 'g' to toggle grid, 'b' to toggle board detection")
+            # Get camera info for logging
+            try:
+                actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            except Exception as e:
+                print(f"   ⚠️ Could not get camera properties: {e}")
+                actual_width, actual_height, actual_fps = 640, 480, 30
+            
+            print(f"\n📹 Camera Configuration:")
+            print(f"   Camera Index: {self.camera_index}")
+            print(f"   Resolution: {actual_width}x{actual_height}")
+            print(f"   FPS: {actual_fps}")
+            print(f"   Detection Mode: {self.detection_mode}")
+            print(f"   Show BBox: {self.show_bbox}")
+            print(f"   Show Grid: {self.show_board_grid}")
+            print(f"\n🎮 Controls:")
+            print(f"   Q - Quit | Space - Toggle BBox | M - Toggle Mode")
+            print(f"   G - Toggle Grid | B - Toggle Board Detection")
+            print(f"   R - Reset Camera | A - Start Analysis")
+            print(f"\n🖼️  Creating OpenCV window...")
             
             # Create window
-            cv2.namedWindow('Chess Detection - ChessMon', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Chess Detection - ChessMon', 720, 720)
+            try:
+                cv2.namedWindow('Chess Detection - ChessMon', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('Chess Detection - ChessMon', 720, 720)
+                print(f"   ✅ Window created successfully!")
+            except Exception as e:
+                print(f"   ⚠️ Window creation warning: {e}")
+                print(f"   Continuing anyway...")
             
             # FPS tracking
             frame_count = 0
             start_time = time.time()
             last_frame_time = time.time()
             
+            print(f"\n▶️  Starting detection loop...")
+            print(f"   Press 'Q' in OpenCV window to stop\n")
+            
             # Main loop
+            loop_iteration = 0
             while self.detection_active:
+                loop_iteration += 1
+                
+                # Log first few iterations
+                if loop_iteration <= 3:
+                    print(f"   Loop iteration {loop_iteration}...")
                 current_time = time.time()
                 
                 # Add frame rate limiting to prevent overwhelming
@@ -686,22 +720,46 @@ class ChessDetectionService:
                 frame_count = 0
                 self.fps_counter += 1
                 
-                # Process frame for detection
+                # **CRITICAL: Display raw frame FIRST before heavy processing**
+                # This keeps window responsive even if detection is slow
                 try:
-                    processed_frame = self.detect_pieces_realtime(frame)
-                    display_frame = self._add_info_overlay(processed_frame)
+                    cv2.imshow('Chess Detection - ChessMon', frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        print("Quit requested by user")
+                        break
                 except Exception as e:
-                    print(f"Frame processing error: {e}")
+                    print(f"Window display error: {e}")
+                    break
+                
+                # Process frame for detection (heavy operation)
+                try:
+                    # Skip heavy processing every other frame to keep UI responsive
+                    if loop_iteration % 2 == 0:  # Only process every 2nd frame
+                        processed_frame = self.detect_pieces_realtime(frame)
+                        
+                        if processed_frame is None:
+                            print("⚠️ Processing returned None, using original frame")
+                            processed_frame = frame
+                        
+                        display_frame = self._add_info_overlay(processed_frame)
+                    else:
+                        # Use previous frame or original frame
+                        display_frame = frame
+                except Exception as e:
+                    print(f"⚠️ Frame processing error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     display_frame = frame
                 
-                # Display frame
+                # Display processed frame
                 try:
                     cv2.imshow('Chess Detection - ChessMon', display_frame)
                 except Exception as e:
                     print(f"Display error: {e}")
                     break
                 
-                # Handle key presses
+                # Handle key presses (already done above but keep for other keys)
                 try:
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
@@ -744,19 +802,27 @@ class ChessDetectionService:
                     start_time = time.time()
             
         except Exception as e:
-            print(f"Detection loop error: {e}")
+            print(f"\n❌ Detection loop error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
+            print(f"\n🔄 Cleaning up detection...")
             self._stop_analysis_window()
             # Cleanup
             try:
                 if self.cap and self.cap.isOpened():
                     self.cap.release()
-                cv2.destroyAllWindows()
+                    print(f"   ✅ Camera released")
+                try:
+                    cv2.destroyAllWindows()
+                    print(f"   ✅ Windows destroyed")
+                except Exception as window_err:
+                    print(f"   ⚠️ Window cleanup warning: {window_err}")
             except Exception as e:
-                print(f"Cleanup error: {e}")
+                print(f"   ⚠️ Cleanup warning: {e}")
             
             self.detection_active = False
-            print("Detection stopped")
+            print("\n⏹️  Detection stopped")
 
     def _update_analysis_fen(self):
         """Update FEN in analysis window"""
@@ -884,7 +950,13 @@ class ChessDetectionService:
     
     def detect_pieces_realtime(self, image):
         """Enhanced detect pieces with board detection integration and FEN generation"""
-        if self.model is None or image is None:
+        if image is None:
+            return None
+            
+        # Check if model is loaded
+        if self.model is None and self.inference_engine is None:
+            if self.fps_counter % 60 == 0:  # Log every 60 frames
+                print("⚠️ No model loaded - showing camera feed only")
             return image
             
         try:

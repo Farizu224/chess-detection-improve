@@ -1,4 +1,12 @@
-import pygame
+# Make pygame optional for Python 3.14 compatibility
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("⚠️ Pygame not available. GUI visualization will be disabled.")
+    print("   Core chess detection still works. To enable GUI, install pygame.")
+
 import chess
 import chess.engine
 import threading
@@ -8,6 +16,9 @@ from typing import Optional, Tuple, Dict, Any
 
 class ChessAnalysisService:
     def __init__(self, stockfish_path):
+        # Check if pygame is available
+        self.pygame_available = PYGAME_AVAILABLE
+        
         # ==== KONFIGURASI UI ====
         self.BOARD_W, self.BOARD_H = 640, 640
         self.PANEL_W = 220

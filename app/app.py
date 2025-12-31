@@ -84,7 +84,7 @@ def on_admin_control(data):
     match_id = data['match_id']
     action = data['action']
     session = GameSession.query.filter_by(match_id=match_id).first()
-    match = Match.query.get(match_id)
+    match = db.session.get(Match, match_id)  # Fix SQLAlchemy 2.0 warning
     
     if session and match:
         if action == 'start':
@@ -117,6 +117,11 @@ def on_update_detection_config(data):
         camera_index = data.get('camera_index')
         mode = data.get('mode')
         show_bbox = data.get('show_bbox')
+        
+        print(f"🔧 UPDATE DETECTION CONFIG received:")
+        print(f"   camera_index (raw): {camera_index} (type: {type(camera_index)})")
+        print(f"   mode: {mode}")
+        print(f"   show_bbox: {show_bbox}")
         
         # Update detection settings
         detection_service.update_detection_settings(
@@ -855,6 +860,12 @@ def on_start_opencv_detection(data):
         camera_index = int(data.get('camera_index', 0))
         mode = data.get('mode', 'raw')
         show_bbox = data.get('show_bbox', True)
+        
+        print(f"\n🚀 START OPENCV DETECTION received:")
+        print(f"   camera_index: {camera_index} (from data: {data.get('camera_index')})")
+        print(f"   mode: {mode}")
+        print(f"   show_bbox: {show_bbox}")
+        print(f"   Full data: {data}")
         
         success = detection_service.start_opencv_detection(camera_index, mode, show_bbox)
         

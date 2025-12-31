@@ -293,6 +293,54 @@ def init_routes(app, login_manager):
             'show_bbox': detection_service.show_bbox
         })
 
+    @app.route('/api/available_cameras', methods=['GET'])
+    @login_required
+    def get_available_cameras():
+        """Get list of available cameras with OpenCV index"""
+        if current_user.role != 'admin':
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        try:
+            cameras = []
+            # Test up to 10 camera indices
+            for i in range(10):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    # Try to read a frame to confirm it works
+                    ret, _ = cap.read()
+                    if ret:
+                        # Get camera properties
+                        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        
+                        # Try to get backend name
+                        backend = cap.getBackendName()
+                        
+                        cameras.append({
+                            'index': i,
+                            'name': f'Camera {i} ({width}x{height})',
+                            'width': width,
+                            'height': height,
+                            'fps': fps,
+                            'backend': backend
+                        })
+                    cap.release()
+                else:
+                    # If camera can't be opened, stop searching
+                    break
+            
+            return jsonify({
+                'success': True,
+                'cameras': cameras,
+                'count': len(cameras)
+            })
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Error detecting cameras: {str(e)}'
+            }), 500
+
     @app.route('/api/moves/<int:match_id>')
     @login_required
     def get_moves(match_id):

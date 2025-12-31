@@ -597,114 +597,91 @@
                 return;
             }
 
+            const select = document.getElementById('camera-select');
+            
             try {
-                logAction('Scanning for available cameras...');
+                logAction('Scanning for available cameras from backend...');
                 
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const videoDevices = devices.filter(device => device.kind === 'videoinput');
-                const select = document.getElementById('camera-select');
+                const response = await fetch('/api/available_cameras');
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to get cameras');
+                }
                 
                 select.innerHTML = '<option value="">Select Camera</option>';
                 
-                if (videoDevices.length === 0) {
+                if (data.cameras.length === 0) {
                     logAction('No cameras found');
                     alert('No cameras detected. Please connect a camera and try again.');
                     return;
                 }
                 
-                videoDevices.forEach((device, index) => {
+                // Populate dropdown with OpenCV camera indices
+                data.cameras.forEach((camera) => {
                     const option = document.createElement('option');
-                    option.value = device.deviceId;
-                    // Show device label if available, otherwise use generic name
-                    option.text = device.label || `Camera ${index + 1}`;
-                    select.appendChild(option);
+                    option.value = camera.index;  // Use OpenCV index directly
+                    option.text = `Camera ${camera.index}: ${camera.width}x${camera.height} @ ${Math.round(camera.fps)}fps`;
                     
-                    logAction(`Found camera: ${device.label || `Camera ${index + 1}`}`);
+                    // Add emoji for easier identification
+                    if (camera.index === 0) {
+                        option.text = `💻 ${option.text} (Laptop)`;
+                    } else if (camera.index === 1) {
+                        option.text = `🎥 ${option.text} (USB)`;
+                    }
+                    
+                    select.appendChild(option);
+                    logAction(`Found: ${option.text}`);
                 });
                 
-                logAction(`Total ${videoDevices.length} camera(s) detected`);
+                logAction(`Total ${data.cameras.length} camera(s) detected`);
                 
             } catch (error) {
-                logAction('Error scanning cameras: ' + error.message);
-                console.error('Error getting cameras:', error);
+                logAction('Error scanning cameras from backend: ' + error.message);
+                console.error('Error getting cameras from backend:', error);
+                
+                // FALLBACK: Use manual camera indices
+                logAction('Using fallback: manual camera selection');
+                select.innerHTML = '<option value="">Select Camera</option>';
+                select.innerHTML += '<option value="0">💻 Camera 0 (Usually Laptop)</option>';
+                select.innerHTML += '<option value="1">🎥 Camera 1 (Usually USB)</option>';
+                select.innerHTML += '<option value="2">📷 Camera 2</option>';
+                
+                logAction('Fallback camera list loaded. Please try selecting a camera.');
             }
         }
 
-        // Start camera
+        // Start camera - DEPRECATED: OpenCV handles camera directly
+        // This function is kept for compatibility but not used
         async function startCamera() {
             const cameraSelect = document.getElementById('camera-select');
-            const deviceId = cameraSelect.value;
+            const cameraIndex = parseInt(cameraSelect.value);
             
-            if (!hasPermission) {
-                logAction('Requesting camera permission first...');
-                const granted = await requestCameraPermission();
-                if (!granted) return;
-            }
-            
-            if (!deviceId) {
-                alert('Please select a camera first');
+            if (isNaN(cameraIndex) || cameraSelect.value === '') {
+                alert('Please select a camera first. Then click "Start Detection" below.');
                 return;
             }
             
-            try {
-                logAction('Starting camera...');
-                
-                // Stop existing stream if any
-                if (videoStream) {
-                    videoStream.getTracks().forEach(track => track.stop());
-                }
-                
-                const constraints = {
-                    video: {
-                        deviceId: { exact: deviceId },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
-                };
-                
-                videoStream = await navigator.mediaDevices.getUserMedia(constraints);
-                const video = document.getElementById('camera-feed');
-                
-                video.srcObject = videoStream;
-                video.classList.remove('hidden'); // Ganti dari 'd-none' ke 'hidden'
-                document.getElementById('camera-placeholder').classList.add('hidden');
-                
-                // Wait for video to load
-                video.onloadedmetadata = () => {
-                    logAction(`Camera started: ${video.videoWidth}x${video.videoHeight}`);
-                };
-                
-            } catch (error) {
-                logAction('Error starting camera: ' + error.message);
-                console.error('Error starting camera:', error);
-                
-                if (error.name === 'NotAllowedError') {
-                    alert('Camera access denied. Please allow camera access.');
-                } else if (error.name === 'NotFoundError') {
-                    alert('Selected camera not found. Please try another camera.');
-                } else if (error.name === 'NotReadableError') {
-                    alert('Camera is being used by another application.');
-                } else {
-                    alert('Error starting camera: ' + error.message);
-                }
-            }
+            alert('Please use "Start Detection" button to start camera with OpenCV.\nBrowser preview is not available.');
+            logAction('Note: Use "Start Detection" button for OpenCV camera');
         }
 
         // Start detection
         function startDetection() {
             const cameraSelect = document.getElementById('camera-select');
-            const deviceId = cameraSelect.value;
+            const cameraIndex = parseInt(cameraSelect.value);
             
-            if (!deviceId) {
-                alert('Please select a camera first');
-                return;
+            console.log('🚀 startDetection called:');
+            console.log('  dropdown value:', cameraSelect.value);
+            console.log('  parsed cameraIndex:', cameraIndex);
+            console.log('  dropdown selectedIndex:', cameraSelect.selectedIndex);
+            console.log('  dropdown options count:', cameraSelect.options.length);
+            if (cameraSelect.selectedIndex >= 0) {
+                console.log('  selected option text:', cameraSelect.options[cameraSelect.selectedIndex].text);
             }
             
-            // Get camera index from device list
-            const cameraIndex = Array.from(cameraSelect.options).findIndex(option => option.value === deviceId) - 1;
-            
-            if (cameraIndex < 0) {
-                alert('Invalid camera selection');
+            if (isNaN(cameraIndex) || cameraSelect.value === '') {
+                alert('Please select a camera first');
                 return;
             }
             
@@ -712,9 +689,15 @@
             const mode = document.querySelector('input[name="detection-mode"]:checked').value;
             const showBbox = document.getElementById('show-bbox').checked;
             
+            console.log('  📤 Sending to backend:');
+            console.log('    camera_index:', cameraIndex);
+            console.log('    mode:', mode);
+            console.log('    show_bbox:', showBbox);
+            
             logAction(`Starting OpenCV detection with Camera ${cameraIndex}, Mode: ${mode}, BBox: ${showBbox}`);
             
             // Send via Socket.IO for real-time updates
+            console.log('  📡 Emitting start_opencv_detection via SocketIO...');
             socket.emit('start_opencv_detection', {
                 camera_index: cameraIndex,
                 mode: mode,
@@ -940,12 +923,19 @@
         // New function to update detection settings in real-time
         function updateDetectionSettings() {
             const cameraSelect = document.getElementById('camera-select');
-            const deviceId = cameraSelect.value;
-            const cameraIndex = Array.from(cameraSelect.options).findIndex(option => option.value === deviceId) - 1;
+            const cameraIndex = parseInt(cameraSelect.value);
             const mode = document.querySelector('input[name="detection-mode"]:checked').value;
             const showBbox = document.getElementById('show-bbox').checked;
             
-            if (cameraIndex >= 0) {
+            console.log('🔧 updateDetectionSettings called:');
+            console.log('  dropdown value:', cameraSelect.value);
+            console.log('  parsed cameraIndex:', cameraIndex);
+            console.log('  isNaN:', isNaN(cameraIndex));
+            console.log('  isEmpty:', cameraSelect.value === '');
+            
+            if (!isNaN(cameraIndex) && cameraSelect.value !== '') {
+                console.log('  ✅ Emitting update_detection_config with camera_index:', cameraIndex);
+                
                 socket.emit('update_detection_config', {
                     camera_index: cameraIndex,
                     mode: mode,
@@ -953,6 +943,8 @@
                 });
                 
                 logAction(`Updated settings - Camera: ${cameraIndex}, Mode: ${mode}, BBox: ${showBbox}`);
+            } else {
+                console.log('  ❌ Skipping emit - invalid camera index');
             }
         }
 
