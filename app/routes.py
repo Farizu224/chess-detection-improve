@@ -5,6 +5,10 @@ from chess_detection import ChessDetectionService
 import base64
 import cv2
 import numpy as np
+import threading
+
+# ✅ FIX: Add lock to prevent thread collision
+detection_start_lock = threading.Lock()
 
 def init_routes(app, login_manager):
 
@@ -156,8 +160,8 @@ def init_routes(app, login_manager):
             })
         return jsonify({'error': 'Session not found'}), 404
 
-    # Initialize detection service
-    detection_service = ChessDetectionService()
+    # Import detection service from app.py (don't create duplicate!)
+    from app import detection_service
 
     @app.route('/api/detect', methods=['POST'])
     @login_required
@@ -217,28 +221,54 @@ def init_routes(app, login_manager):
         if current_user.role != 'admin':
             return jsonify({'error': 'Unauthorized'}), 403
         
-        try:
-            data = request.get_json()
-            camera_index = int(data.get('camera_index', 0))
-            mode = data.get('mode', 'raw')
-            show_bbox = data.get('show_bbox', True)
-            
-            # Start OpenCV detection
-            success = detection_service.start_opencv_detection(camera_index, mode, show_bbox)
-            
-            if success:
-                return jsonify({
-                    'status': 'success',
-                    'message': 'OpenCV detection started',
-                    'camera_index': camera_index,
-                    'mode': mode,
-                    'show_bbox': show_bbox
-                })
-            else:
-                return jsonify({'error': 'Failed to start detection'}), 500
+        # ✅ CRITICAL: Use lock to prevent race condition
+        with detection_start_lock:
+            try:
+                # ✅ STRICT CHECK: Reject if detection active OR thread still alive
+                if detection_service.is_detection_active():
+                    print("❌ REJECTED: Detection already active (flag=True)")
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Detection already running',
+                        'already_active': True
+                    }), 409  # Conflict status code
                 
-        except Exception as e:
-            return jsonify({'error': f'Detection service error: {str(e)}'}), 500
+                # Additional check: verify thread state
+                if (hasattr(detection_service, 'detection_thread') and 
+                    detection_service.detection_thread and 
+                    detection_service.detection_thread.is_alive()):
+                    print("❌ REJECTED: Detection thread still alive")
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Previous detection thread still running',
+                        'thread_alive': True
+                    }), 409
+                
+                data = request.get_json()
+                camera_index = int(data.get('camera_index', 0))
+                mode = data.get('mode', 'raw')
+                show_bbox = data.get('show_bbox', True)
+                
+                print(f"✅ STARTING detection: Camera {camera_index}")
+                
+                # Start OpenCV detection
+                success = detection_service.start_opencv_detection(camera_index, mode, show_bbox)
+                
+                if success:
+                    return jsonify({
+                        'status': 'success',
+                        'message': 'OpenCV detection started',
+                        'camera_index': camera_index,
+                        'mode': mode,
+                        'show_bbox': show_bbox
+                    })
+                else:
+                    return jsonify({'error': 'Failed to start detection'}), 500
+                    
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'error': f'Detection service error: {str(e)}'}), 500
 
     @app.route('/api/stop_opencv_detection', methods=['POST'])
     @login_required
@@ -296,39 +326,53 @@ def init_routes(app, login_manager):
     @app.route('/api/available_cameras', methods=['GET'])
     @login_required
     def get_available_cameras():
-        """Get list of available cameras with OpenCV index"""
+        """Get list of available cameras with OpenCV index (optimized)"""
         if current_user.role != 'admin':
             return jsonify({'error': 'Unauthorized'}), 403
         
         try:
             cameras = []
-            # Test up to 10 camera indices
-            for i in range(10):
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    # Try to read a frame to confirm it works
-                    ret, _ = cap.read()
-                    if ret:
-                        # Get camera properties
-                        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        fps = cap.get(cv2.CAP_PROP_FPS)
+            # OPTIMIZED: Test max 3 cameras with DirectShow (faster), stop after 2 consecutive failures
+            consecutive_failures = 0
+            
+            for i in range(3):  # Reduced from 10
+                try:
+                    # Use DirectShow backend for faster initialization (skips slow NVIDIA Broadcast)
+                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                    
+                    if cap.isOpened():
+                        ret, _ = cap.read()
+                        if ret:
+                            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            fps = cap.get(cv2.CAP_PROP_FPS)
+                            backend = cap.getBackendName()
+                            
+                            cameras.append({
+                                'index': i,
+                                'name': f'Camera {i} ({width}x{height})',
+                                'width': width,
+                                'height': height,
+                                'fps': fps,
+                                'backend': backend
+                            })
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                        cap.release()
+                    else:
+                        consecutive_failures += 1
+                    
+                    # Stop early if 2 consecutive failures (no more cameras)
+                    if consecutive_failures >= 2:
+                        print(f"Stopped camera enumeration after {consecutive_failures} failures")
+                        break
                         
-                        # Try to get backend name
-                        backend = cap.getBackendName()
-                        
-                        cameras.append({
-                            'index': i,
-                            'name': f'Camera {i} ({width}x{height})',
-                            'width': width,
-                            'height': height,
-                            'fps': fps,
-                            'backend': backend
-                        })
-                    cap.release()
-                else:
-                    # If camera can't be opened, stop searching
-                    break
+                except Exception as e:
+                    print(f"Error testing camera {i}: {e}")
+                    consecutive_failures += 1
+                    if consecutive_failures >= 2:
+                        break
             
             return jsonify({
                 'success': True,

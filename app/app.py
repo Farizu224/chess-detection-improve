@@ -34,6 +34,16 @@ with app.app_context():
         db.session.commit()
         print("Admin user created successfully")
 
+# Initialize detection service BEFORE routes (to avoid circular import)
+import os
+if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+    detection_service = ChessDetectionService()
+    print("✅ Detection service initialized")
+else:
+    detection_service = None
+    print("⏭️ Skipping detection init (Flask reloader parent process)")
+
+# Now initialize routes (they can import detection_service)
 init_routes(app, login_manager)
 
 # Socket.IO Events
@@ -109,7 +119,6 @@ def on_admin_control(data):
             'initial_time': match.initial_time,   # Tambahkan info waktu awal
             'increment': match.increment          # Tambahkan info increment
         }, room=f"match_{match_id}")
-detection_service = ChessDetectionService()
 
 @socketio.on('update_detection_config')
 def on_update_detection_config(data):

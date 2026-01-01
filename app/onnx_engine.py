@@ -11,8 +11,16 @@ Date: December 2025
 import cv2
 import numpy as np
 import time
+
+# ✅ CRITICAL: Suppress ONNX warnings BEFORE importing
+import os
+import sys
+os.environ['ORT_DISABLE_SYMBOL_BINDING'] = '1'
+os.environ['ORT_LOGGING_LEVEL'] = '3'  # ERROR only
+
 try:
     import onnxruntime as ort
+    ort.set_default_logger_severity(3)  # ERROR only
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
@@ -74,12 +82,37 @@ class YOLOBoxWrapper:
 
 
 class BoxItem:
-    """Individual box item wrapper."""
+    """Individual box item wrapper (ONNX-compatible with PyTorch API)."""
     def __init__(self, data):
         # data format: [x1, y1, x2, y2, confidence, class_id]
-        self.xyxy = np.array([[data[0], data[1], data[2], data[3]]])
-        self.conf = np.array([data[4]])
-        self.cls = np.array([data[5]])
+        # Store as numpy but mimic PyTorch tensor structure
+        self._xyxy = np.array([[data[0], data[1], data[2], data[3]]], dtype=np.float32)
+        self._conf = np.array([data[4]], dtype=np.float32)
+        self._cls = np.array([data[5]], dtype=np.float32)
+    
+    @property
+    def xyxy(self):
+        """Return array-like object with .cpu() method for PyTorch compatibility."""
+        class NumpyWithCPU:
+            def __init__(self, arr):
+                self.data = arr
+            def __getitem__(self, idx):
+                # Return numpy array directly (already on CPU)
+                return self.data[idx]
+            def cpu(self):
+                return self  # Already numpy, return self
+            def numpy(self):
+                return self.data
+        # Return wrapper that behaves like PyTorch tensor
+        return NumpyWithCPU(self._xyxy)
+    
+    @property
+    def conf(self):
+        return self._conf
+    
+    @property
+    def cls(self):
+        return self._cls
 
 
 class ONNXInferenceEngine:
@@ -93,15 +126,19 @@ class ONNXInferenceEngine:
     - Pre/post-processing optimization
     """
     
-    def __init__(self, onnx_path=None, pytorch_model=None, input_size=720):
+    def __init__(self, onnx_path=None, pytorch_model=None, input_size=736, class_names=None):
         """
         Initialize ONNX inference engine.
         
         Args:
             onnx_path: Path to ONNX model file
             pytorch_model: Fallback PyTorch model (path string or YOLO object)
-            input_size: Model input size (default 720)
+            input_size: Model input size (default 736 - must match ONNX model)
+            class_names: Dictionary of class names {0: 'class1', 1: 'class2', ...}
         """
+        # ✅ CRITICAL: Initialize class_names FIRST as explicit parameter
+        self.class_names = class_names
+        
         self.input_size = input_size
         self.session = None
         self.use_onnx = False
@@ -117,33 +154,36 @@ class ONNXInferenceEngine:
                 from ultralytics import YOLO
                 self.pytorch_model = YOLO(pytorch_model)
                 print(f"   Loaded PyTorch fallback model: {pytorch_model}")
+                # Extract class names from PyTorch model ONLY if not already provided
+                if self.class_names is None and hasattr(self.pytorch_model, 'names'):
+                    self.class_names = self.pytorch_model.names
+                    print(f"   ✅ Loaded {len(self.class_names)} class names")
             except Exception as e:
                 print(f"   ⚠️ Could not load PyTorch fallback: {e}")
                 self.pytorch_model = None
         else:
             self.pytorch_model = pytorch_model
+            # Extract class names from YOLO object ONLY if not already provided
+            if self.class_names is None and self.pytorch_model and hasattr(self.pytorch_model, 'names'):
+                self.class_names = self.pytorch_model.names
+                print(f"   ✅ Loaded {len(self.class_names)} class names from model object")
         
         # Try to load ONNX model
         if onnx_path and ONNX_AVAILABLE:
             self._load_onnx(onnx_path)
     
     def _load_onnx(self, onnx_path):
-        """Load ONNX model with GPU support."""
+        """Load ONNX model with CPU execution."""
         try:
-            # Setup execution providers (GPU first, then CPU)
-            providers = []
+            # ✅ Use CPU only (no CUDA check = no warnings)
+            providers = ['CPUExecutionProvider']
             
-            # Try CUDA first
-            if 'CUDAExecutionProvider' in ort.get_available_providers():
-                providers.append('CUDAExecutionProvider')
-                print("✅ ONNX CUDA provider available")
+            sess_options = ort.SessionOptions()
+            sess_options.log_severity_level = 3  # ERROR only
             
-            # CPU fallback
-            providers.append('CPUExecutionProvider')
-            
-            # Create session
             self.session = ort.InferenceSession(
                 onnx_path,
+                sess_options=sess_options,
                 providers=providers
             )
             
@@ -152,12 +192,10 @@ class ONNXInferenceEngine:
             self.output_names = [output.name for output in self.session.get_outputs()]
             
             self.use_onnx = True
-            print(f"✅ ONNX model loaded: {onnx_path}")
-            print(f"   Providers: {self.session.get_providers()}")
+            print(f"✅ ONNX model loaded (CPU): {onnx_path}")
             
         except Exception as e:
-            print(f"⚠️ Failed to load ONNX model: {e}")
-            print("   Falling back to PyTorch")
+            print(f"⚠️ ONNX load failed: {e}")
             self.use_onnx = False
     
     def preprocess(self, image):
@@ -168,11 +206,17 @@ class ONNXInferenceEngine:
             image: Input image (BGR, any size)
         
         Returns:
-            np.ndarray: Preprocessed image for model input
+            np.ndarray: Preprocessed image for model input (resized to input_size x input_size)
         """
-        # Resize to model input size
+        # Resize to model input size (should be 736x736 for this model)
+        original_shape = image.shape[:2]
         if image.shape[:2] != (self.input_size, self.input_size):
             image = cv2.resize(image, (self.input_size, self.input_size))
+            
+        # Debug: Print resize info (only once to avoid spam)
+        if not hasattr(self, '_resize_logged'):
+            print(f"   ONNX Preprocess: {original_shape} -> {image.shape[:2]} (target: {self.input_size}x{self.input_size})")
+            self._resize_logged = True
         
         # Convert BGR to RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -298,9 +342,16 @@ class ONNXInferenceEngine:
     
     def _get_model_names(self):
         """Get class names from model."""
+        # ✅ FIX: Use stored class_names (from PyTorch model initialization)
+        if self.class_names:
+            return self.class_names
+        
+        # Fallback: Try to get from PyTorch model
         if self.pytorch_model and hasattr(self.pytorch_model, 'names'):
             return self.pytorch_model.names
-        # Default chess piece names if model not available
+        
+        # Last resort: Default chess piece names
+        print("⚠️ WARNING: Using default class names - model classes may not match!")
         return {
             0: 'white-pawn', 1: 'white-rook', 2: 'white-knight',
             3: 'white-bishop', 4: 'white-queen', 5: 'white-king',
