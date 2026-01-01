@@ -93,6 +93,7 @@ class ChessDetectionService:
         self.detection_active = False
         self.detection_thread = None
         self.camera_index = 0
+        self.camera_source = None  # Bisa int (index) atau string (URL untuk DroidCam)
         self.detection_mode = 'raw'
         self.show_bbox = True
         self.cap = None
@@ -518,8 +519,20 @@ class ChessDetectionService:
     
     
     def start_opencv_detection(self, camera_index=0, mode='raw', show_bbox=True):
-        """Start real-time detection in OpenCV window"""
-        self.camera_index = camera_index
+        """Start real-time detection in OpenCV window
+        
+        Args:
+            camera_index: Camera index (int) atau DroidCam URL (str)
+                         Examples: 0, 1, 'http://192.168.1.100:4747/video'
+        """
+        # Support untuk DroidCam URL atau camera index
+        if isinstance(camera_index, str):
+            self.camera_source = camera_index
+            self.camera_index = 0  # Set default int untuk compatibility
+        else:
+            self.camera_source = camera_index
+            self.camera_index = camera_index
+            
         self.detection_mode = mode
         self.show_bbox = show_bbox
         
@@ -560,96 +573,214 @@ class ChessDetectionService:
     def _detection_loop(self):
         """Main detection loop running in separate thread"""
         try:
-            # SAFE MODE: Use CAP_ANY only, let OpenCV decide
-            print(f"Opening camera {self.camera_index} with Auto backend...")
+            # ========== ROBUST CAMERA INITIALIZATION (DroidCam Compatible) ==========
+            # Try multiple backends until one works - approach from working DroidCam version
+            import platform
             
-            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_ANY)
+            source = self.camera_source if self.camera_source is not None else self.camera_index
             
-            if not self.cap or not self.cap.isOpened():
-                print(f"Error: Could not open camera {self.camera_index}")
-                self.detection_active = False
-                return
+            # Handle DroidCam URL (IP camera)
+            if isinstance(source, str):
+                print(f"🎥 Opening DroidCam from URL: {source}")
+                self.cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                
+                if not self.cap or not self.cap.isOpened():
+                    print(f"❌ Error: Could not open DroidCam URL: {source}")
+                    self.detection_active = False
+                    return
+                
+                # Warm up: read a few frames
+                test_ret = False
+                test_frame = None
+                for _ in range(10):
+                    test_ret, test_frame = self.cap.read()
+                    if test_ret and test_frame is not None:
+                        break
+                    time.sleep(0.1)
+                
+                if not test_ret or test_frame is None:
+                    print("❌ Error: Cannot read frames from DroidCam URL")
+                    self.cap.release()
+                    self.detection_active = False
+                    return
+                
+                print(f"✅ DroidCam URL working! Frame size: {test_frame.shape}")
+                
+            else:
+                # ========== VIRTUAL CAMERA (DroidCam Virtual / Regular Webcam) ==========
+                # Try multiple backends like working version
+                if platform.system() == 'Windows':
+                    backend_candidates = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+                else:
+                    backend_candidates = [cv2.CAP_ANY]
+                
+                self.cap = None
+                test_frame = None
+                
+                for backend in backend_candidates:
+                    backend_name = {
+                        cv2.CAP_DSHOW: 'CAP_DSHOW',
+                        cv2.CAP_MSMF: 'CAP_MSMF',
+                        cv2.CAP_ANY: 'CAP_ANY',
+                    }.get(backend, str(backend))
+                    
+                    print(f"🎥 Opening camera {source} with {backend_name}...")
+                    cap = cv2.VideoCapture(source, backend)
+                    
+                    if not cap or not cap.isOpened():
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        continue
+                    
+                    # ✅ WARM UP: Read multiple frames (some backends need time)
+                    # This is the KEY to DroidCam success!
+                    test_ret = False
+                    for attempt in range(10):
+                        test_ret, test_frame = cap.read()
+                        if test_ret and test_frame is not None:
+                            print(f"   ✅ Got frame after {attempt + 1} attempts")
+                            break
+                        time.sleep(0.1)
+                    
+                    if test_ret and test_frame is not None:
+                        self.cap = cap
+                        print(f"✅ Camera {source} working with {backend_name}! Frame size: {test_frame.shape}")
+                        break
+                    
+                    cap.release()
+                
+                if not self.cap or not self.cap.isOpened() or test_frame is None:
+                    print(f"❌ Error: Could not open camera {source} with any backend")
+                    print(f"💡 Tip for DroidCam:")
+                    print(f"   1. Make sure DroidCam Client is running")
+                    print(f"   2. DroidCam app running on phone")
+                    print(f"   3. Phone connected (USB or same WiFi)")
+                    self.detection_active = False
+                    return
             
-            # CRITICAL: Read ONE test frame BEFORE setting any properties
-            print("Testing camera with first frame read...")
-            test_ret, test_frame = self.cap.read()
+            print(f"✅ Camera initialized successfully!")
             
-            if not test_ret or test_frame is None:
-                print("Error: Camera opened but cannot read frames")
-                self.cap.release()
-                self.detection_active = False
-                return
-            
-            print(f"✅ Camera {self.camera_index} is working! Frame size: {test_frame.shape}")
-            
-            # NOW it's safe to set properties (camera is "warmed up")
-            try:
-                # Try to set resolution - wrapped in try-except
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                self.cap.set(cv2.CAP_PROP_FPS, 30)
-                print("Properties set successfully")
-            except Exception as e:
-                print(f"Warning: Could not set properties (continuing anyway): {e}")
-            
-            # Get actual camera properties
+            # Get CURRENT camera properties (before changing anything)
             actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            print(f"Camera config: {actual_width}x{actual_height} @ {actual_fps}fps")
+            backend_name = self.cap.getBackendName()
+            
+            print(f"Camera native config: {actual_width}x{actual_height} @ {actual_fps}fps (backend: {backend_name})")
+            
+            # ⚠️ CRITICAL: DO NOT set properties for DroidCam (Camera 0) with Media Foundation!
+            # Setting properties causes Media Foundation to reinitialize stream → FAILS!
+            # DroidCam works best with native resolution
+            skip_property_setting = False
+            
+            if isinstance(source, int):
+                # Check if it's DroidCam (Camera 0 or high resolution camera)
+                if source == 0 or actual_width >= 1280 or backend_name == 'MSMF':
+                    print(f"⚠️ Skipping property setting for Camera {source} (DroidCam/Media Foundation - use native resolution)")
+                    skip_property_setting = True
+            
+            # NOW try to set properties (only if safe)
+            if not skip_property_setting:
+                try:
+                    if isinstance(source, int):
+                        # Only set for regular webcam, not DroidCam
+                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        self.cap.set(cv2.CAP_PROP_FPS, 30)
+                        print("Properties set successfully")
+                        
+                        # Re-read properties
+                        actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not set properties (continuing anyway): {e}")
+            
+            print(f"Final camera config: {actual_width}x{actual_height} @ {actual_fps}fps")
             
             # Create window
             cv2.namedWindow('Chess Detection - ChessMon', cv2.WINDOW_NORMAL)
             cv2.resizeWindow('Chess Detection - ChessMon', 720, 720)
             
-            # FPS tracking
+            # FPS tracking and error handling
             frame_count = 0
             start_time = time.time()
-            last_frame_time = time.time()
+            frame_read_failures = 0  # Track consecutive failures
+            consecutive_msmf_errors = 0
+            last_valid_frame = None
+            last_detection_result = None  # Cache last detection result
+            msmf_error_printed = False
             
             # Main loop
             while self.detection_active:
-                current_time = time.time()
-                
-                # Frame rate limiting
-                if current_time - last_frame_time < 0.033:  # ~30 FPS max
-                    time.sleep(0.001)
-                    continue
-                
-                last_frame_time = current_time
-                
-                # Read frame
+                # Read frame - no artificial delay
                 ret = False
                 frame = None
+                frame_is_cached = False
                 
                 try:
                     ret, frame = self.cap.read()
-                except Exception as e:
-                    print(f"Frame read error: {e}")
+                    
+                    # Fast frame validation
+                    if ret and frame is not None and frame.size > 0:
+                        # Valid frame - cache it
+                        last_valid_frame = frame
+                        frame_read_failures = 0
+                        consecutive_msmf_errors = 0
+                        frame_is_cached = False
+                    else:
+                        ret = False
+                        frame = None
+                    
+                except Exception as e:  # MSMF error handling
+                    if "-1072873821" in str(e) or "MSMF" in str(e):
+                        consecutive_msmf_errors += 1
+                        if not msmf_error_printed:
+                            print(f"⚠️ DroidCam/MSMF warnings (using smart caching)")
+                            msmf_error_printed = True
                     ret = False
+                    frame = None
                 
+                # Handle failed reads
                 if not ret or frame is None:
-                    frame_count += 1
-                    if frame_count > 30:
-                        print("Too many frame read failures, exiting...")
+                    frame_read_failures += 1
+                    
+                    # Use cached frame (be more tolerant of MSMF errors)
+                    if last_valid_frame is not None and frame_read_failures < 50:
+                        frame = last_valid_frame
+                        ret = True
+                        frame_is_cached = True
+                    elif frame_read_failures > 200:
+                        print(f"\n❌ Camera lost after {frame_read_failures} failures")
                         break
-                    time.sleep(0.1)
-                    continue
+                    else:
+                        continue
                 
-                # Reset frame count on successful read
-                frame_count = 0
-                
-                # Increment FPS counter
+                # Successfully got a frame (real or cached)
                 self.fps_counter += 1
                 
-                # Process frame
+                # Process frame - run inference on every VALID frame
+                display_frame = frame
+                
                 try:
-                    processed_frame = self.detect_pieces_realtime(frame)
-                    if processed_frame is None:
-                        processed_frame = frame
-                    display_frame = self._add_simple_overlay(processed_frame)
+                    # Run inference on valid frames only (skip MSMF cached frames)
+                    if not frame_is_cached:
+                        processed_frame = self.detect_pieces_realtime(frame)
+                        if processed_frame is not None:
+                            display_frame = processed_frame
+                            last_detection_result = processed_frame  # Cache for MSMF errors
+                    elif last_detection_result is not None:
+                        # Use cached detection only during MSMF errors
+                        display_frame = last_detection_result
+                    
+                    # Add overlay
+                    display_frame = self._add_simple_overlay(display_frame)
+                    
                 except Exception as e:
-                    print(f"Frame processing error: {e}")
+                    if self.fps_counter % 30 == 0:  # Only print occasionally
+                        print(f"Frame processing error: {e}")
                     display_frame = frame
                 
                 # Display frame
@@ -861,9 +992,12 @@ class ChessDetectionService:
         return self.detection_active
     
     def detect_pieces_realtime(self, image):
-        """Real-time piece detection - ONNX optimized, zero PyTorch dependencies
+        """Real-time piece detection - ONNX optimized, MINIMAL OVERHEAD
         
-        Note: Image should be 736x736 to match ONNX model input
+        Performance optimizations:
+        - No unnecessary frame copying
+        - Direct numpy array access
+        - Minimal validation overhead
         """
         if image is None:
             return None
@@ -873,96 +1007,82 @@ class ChessDetectionService:
             return image
             
         try:
-            input_image = image.copy()
+            # Run inference EVERY FRAME for smooth detection (ONNX is fast!)
+            inference_start = time.time()
             
-            # Run inference every 3 frames for performance
-            if self.fps_counter % 3 == 0:
-                inference_start = time.time()
-                
-                # Run ONNX inference (assume ONNX is loaded)
-                if self.inference_engine is not None:
-                    results = self.inference_engine.infer(input_image, conf_threshold=0.15)
-                elif self.model is not None:
-                    results = self.model(input_image, conf=0.15, verbose=False)
-                else:
-                    return image
-                
-                inference_time = (time.time() - inference_start) * 1000
-                
-                # Process detections - SIMPLE AND DIRECT
-                detections = []
-                if results and len(results) > 0:
-                    result = results[0]
-                    
-                    if hasattr(result, 'boxes') and result.boxes is not None:
-                        boxes = result.boxes
-                        
-                        # Track parse errors to avoid spam
-                        parse_error_count = 0
-                        
-                        for box in boxes:
-                            try:
-                                # DIRECT EXTRACTION - NO .cpu() CALLS
-                                # box.xyxy[0] is already numpy array [x1, y1, x2, y2]
-                                coords = box.xyxy[0]
-                                x1, y1, x2, y2 = float(coords[0]), float(coords[1]), float(coords[2]), float(coords[3])
-                                
-                                # box.conf[0] is already numpy/float
-                                conf = float(box.conf[0])
-                                
-                                # box.cls[0] is already numpy/float
-                                cls_id = int(box.cls[0])
-                                
-                                # Get class name
-                                if self.inference_engine and hasattr(self.inference_engine, 'class_names'):
-                                    cls_name = self.inference_engine.class_names.get(cls_id, f"Class_{cls_id}")
-                                elif self.model and hasattr(self.model, 'names'):
-                                    cls_name = self.model.names[cls_id]
-                                else:
-                                    cls_name = f"Class_{cls_id}"
-                                
-                                # Filter small boxes
-                                width = x2 - x1
-                                height = y2 - y1
-                                area = width * height
-                                
-                                if area >= 100 and 0.3 < (width/height) < 3.0:
-                                    detections.append({
-                                        'x1': int(x1), 'y1': int(y1),
-                                        'x2': int(x2), 'y2': int(y2),
-                                        'conf': conf,
-                                        'class_id': cls_id,
-                                        'class_name': cls_name
-                                    })
-                                    
-                            except Exception as e:
-                                # Silent error handling - no spam
-                                parse_error_count += 1
-                                continue
-                        
-                        # Print parse errors only once per inference
-                        if parse_error_count > 0 and self.fps_counter % 30 == 0:
-                            print(f"   ⚠️ Skipped {parse_error_count} bad boxes")
-                
-                # MANDATORY DEBUG PRINTS - only occasionally
-                if self.fps_counter % 30 == 0:
-                    if len(detections) > 0:
-                        print(f"✅ Detected {len(detections)} objects. First: {detections[0]['class_name']} conf={detections[0]['conf']:.2f}")
-                    else:
-                        print(f"❌ No objects detected. Inference: {inference_time:.0f}ms")
-                
-                # Store results for next frames
-                self.last_detections = detections
+            # Run ONNX inference - pass image directly, no copy
+            if self.inference_engine is not None:
+                results = self.inference_engine.infer(image, conf_threshold=0.32)  # Based on white_bishop correct at 0.32
+            elif self.model is not None:
+                results = self.model(image, conf=0.32, verbose=False)
             else:
-                # Use cached detections
-                if hasattr(self, 'last_detections'):
-                    detections = self.last_detections
+                return image
+            
+            inference_time = (time.time() - inference_start) * 1000
+            
+            # Process detections - SIMPLE AND DIRECT
+            detections = []
+            if results and len(results) > 0:
+                result = results[0]
+                
+                if hasattr(result, 'boxes') and result.boxes is not None:
+                    boxes = result.boxes
+                    
+                    # Track parse errors to avoid spam
+                    parse_error_count = 0
+                    
+                    for box in boxes:
+                        try:
+                            # DIRECT EXTRACTION - NO .cpu() CALLS
+                            # box.xyxy[0] is already numpy array [x1, y1, x2, y2]
+                            coords = box.xyxy[0]
+                            x1, y1, x2, y2 = float(coords[0]), float(coords[1]), float(coords[2]), float(coords[3])
+                            
+                            # box.conf[0] is already numpy/float
+                            conf = float(box.conf[0])
+                            
+                            # box.cls[0] is already numpy/float
+                            cls_id = int(box.cls[0])
+                            
+                            # Get class name
+                            if self.inference_engine and hasattr(self.inference_engine, 'class_names'):
+                                cls_name = self.inference_engine.class_names.get(cls_id, f"Class_{cls_id}")
+                            elif self.model and hasattr(self.model, 'names'):
+                                cls_name = self.model.names[cls_id]
+                            else:
+                                cls_name = f"Class_{cls_id}"
+                            
+                            # Filter small boxes
+                            width = x2 - x1
+                            height = y2 - y1
+                            area = width * height
+                            
+                            if area >= 100 and 0.3 < (width/height) < 3.0:
+                                detections.append({
+                                    'x1': int(x1), 'y1': int(y1),
+                                    'x2': int(x2), 'y2': int(y2),
+                                    'conf': conf,
+                                    'class_id': cls_id,
+                                    'class_name': cls_name
+                                })
+                                
+                        except Exception as e:
+                            # Silent error handling - no spam
+                            parse_error_count += 1
+                            continue
+                    
+                    # Print parse errors only once per inference
+                    if parse_error_count > 0 and self.fps_counter % 30 == 0:
+                        print(f"   ⚠️ Skipped {parse_error_count} bad boxes")
+            
+            # MANDATORY DEBUG PRINTS - only occasionally
+            if self.fps_counter % 30 == 0:
+                if len(detections) > 0:
+                    print(f"✅ Detected {len(detections)} objects. First: {detections[0]['class_name']} conf={detections[0]['conf']:.2f}")
                 else:
-                    detections = []
+                    print(f"❌ No objects detected. Inference: {inference_time:.0f}ms")
             
-            # Draw bounding boxes if enabled
-            display_image = input_image.copy()
-            
+            # Draw bounding boxes if enabled - DIRECTLY ON INPUT IMAGE (no copy!)
             if self.show_bbox and detections:
                 for det in detections:
                     x1, y1, x2, y2 = det['x1'], det['y1'], det['x2'], det['y2']
@@ -970,7 +1090,7 @@ class ChessDetectionService:
                     cls_name = det['class_name']
                     
                     # Draw green rectangle
-                    cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     
                     # Draw label ABOVE the box
                     label = f"{cls_name}: {conf:.2f}"
@@ -987,16 +1107,16 @@ class ChessDetectionService:
                         text_y = y2 + text_height + 5  # If too close to top, draw below
                     
                     # Black background for text
-                    cv2.rectangle(display_image, 
+                    cv2.rectangle(image, 
                                 (x1, text_y - text_height - 5), 
                                 (x1 + text_width, text_y + baseline),
                                 (0, 255, 0), -1)
                     
                     # White text
-                    cv2.putText(display_image, label, (x1, text_y - 5), 
+                    cv2.putText(image, label, (x1, text_y - 5), 
                               font, font_scale, (0, 0, 0), thickness)
             
-            return display_image
+            return image
             
         except Exception as e:
             # Only print major errors occasionally

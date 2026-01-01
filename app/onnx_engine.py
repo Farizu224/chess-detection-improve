@@ -173,13 +173,28 @@ class ONNXInferenceEngine:
             self._load_onnx(onnx_path)
     
     def _load_onnx(self, onnx_path):
-        """Load ONNX model with CPU execution."""
+        """Load ONNX model with GPU acceleration if available."""
         try:
-            # ✅ Use CPU only (no CUDA check = no warnings)
-            providers = ['CPUExecutionProvider']
+            # 🚀 Try GPU first (DirectML/CUDA/TensorRT), fallback to CPU
+            available_providers = ort.get_available_providers()
+            
+            if 'DmlExecutionProvider' in available_providers:
+                # DirectML - Windows GPU without CUDA (best for laptops)
+                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+                device_name = "GPU (DirectML)"
+            elif 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                device_name = "GPU (CUDA)"
+            elif 'TensorrtExecutionProvider' in available_providers:
+                providers = ['TensorrtExecutionProvider', 'CPUExecutionProvider']
+                device_name = "GPU (TensorRT)"
+            else:
+                providers = ['CPUExecutionProvider']
+                device_name = "CPU"
             
             sess_options = ort.SessionOptions()
             sess_options.log_severity_level = 3  # ERROR only
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             
             self.session = ort.InferenceSession(
                 onnx_path,
@@ -191,8 +206,15 @@ class ONNXInferenceEngine:
             self.input_name = self.session.get_inputs()[0].name
             self.output_names = [output.name for output in self.session.get_outputs()]
             
+            # Verify which provider is actually used
+            actual_provider = self.session.get_providers()[0]
+            if 'CUDA' in actual_provider or 'Tensorrt' in actual_provider or 'Dml' in actual_provider:
+                device_name = f"GPU ({actual_provider.replace('ExecutionProvider', '')})"
+            else:
+                device_name = "CPU"
+            
             self.use_onnx = True
-            print(f"✅ ONNX model loaded (CPU): {onnx_path}")
+            print(f"✅ ONNX model loaded ({device_name}): {onnx_path}")
             
         except Exception as e:
             print(f"⚠️ ONNX load failed: {e}")
@@ -200,7 +222,7 @@ class ONNXInferenceEngine:
     
     def preprocess(self, image):
         """
-        Preprocess image for inference.
+        Preprocess image for inference - OPTIMIZED FOR SPEED
         
         Args:
             image: Input image (BGR, any size)
@@ -209,25 +231,17 @@ class ONNXInferenceEngine:
             np.ndarray: Preprocessed image for model input (resized to input_size x input_size)
         """
         # Resize to model input size (should be 736x736 for this model)
-        original_shape = image.shape[:2]
         if image.shape[:2] != (self.input_size, self.input_size):
-            image = cv2.resize(image, (self.input_size, self.input_size))
-            
-        # Debug: Print resize info (only once to avoid spam)
-        if not hasattr(self, '_resize_logged'):
-            print(f"   ONNX Preprocess: {original_shape} -> {image.shape[:2]} (target: {self.input_size}x{self.input_size})")
-            self._resize_logged = True
+            # Use INTER_LINEAR for speed (faster than INTER_AREA)
+            image = cv2.resize(image, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
         
-        # Convert BGR to RGB
+        # Convert BGR to RGB and transpose in one step
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         if self.use_onnx:
-            # ONNX preprocessing
-            # Transpose to CHW format
-            image = image.transpose(2, 0, 1)
-            
-            # Normalize to [0, 1]
-            image = image.astype(np.float32) / 255.0
+            # ONNX preprocessing - optimized pipeline
+            # Transpose to CHW format and normalize in single operation
+            image = image.transpose(2, 0, 1).astype(np.float32) / 255.0
             
             # Add batch dimension
             image = np.expand_dims(image, axis=0)
@@ -283,7 +297,12 @@ class ONNXInferenceEngine:
             return [YOLOResultWrapper([], orig_img, self._get_model_names())]
     
     def _predict_onnx(self, image, conf_threshold):
-        """ONNX inference - returns detections in [x1, y1, x2, y2, conf, cls] format."""
+        """ONNX inference - returns detections in [x1, y1, x2, y2, conf, cls] format.
+        
+        YOLOv8 ONNX output format: [batch, 84, 8400]
+        - 84 channels = [x, y, w, h] + 12 class confidences (for chess pieces)
+        - 8400 = number of anchors (predictions)
+        """
         # Preprocess
         input_tensor = self.preprocess(image)
         
@@ -293,38 +312,77 @@ class ONNXInferenceEngine:
             {self.input_name: input_tensor}
         )
         
-        # Post-process results
-        # YOLO output format: [batch, num_detections, 85]
-        # [x, y, w, h, obj_conf, class1_conf, ..., classN_conf]
-        detections = outputs[0][0]  # Remove batch dimension
+        # Post-process YOLOv8 output
+        # Output shape: [batch, 84, 8400] -> need to transpose to [batch, 8400, 84]
+        predictions = outputs[0]  # Shape: [1, 84, 8400]
         
+        # Transpose to [batch, num_anchors, num_features]
+        predictions = predictions.transpose(0, 2, 1)  # [1, 8400, 84]
+        predictions = predictions[0]  # Remove batch dim -> [8400, 84]
+        
+        # Extract bbox coords and class scores
+        # predictions[:, 0:4] = [x_center, y_center, width, height]
+        # predictions[:, 4:] = class confidences for each of the 12 classes
+        
+        boxes = predictions[:, :4]  # [8400, 4]
+        class_scores = predictions[:, 4:]  # [8400, 12] for chess pieces
+        
+        # Get max confidence and class ID for each prediction
+        confidences = np.max(class_scores, axis=1)  # [8400]
+        class_ids = np.argmax(class_scores, axis=1)  # [8400]
+        
+        # Filter by confidence threshold
+        valid_mask = confidences >= conf_threshold
+        
+        filtered_boxes = boxes[valid_mask]
+        filtered_confs = confidences[valid_mask]
+        filtered_class_ids = class_ids[valid_mask]
+        
+        # Apply NMS (Non-Maximum Suppression) to remove overlapping boxes
         results = []
-        for detection in detections:
-            obj_conf = detection[4]
-            if obj_conf < conf_threshold:
-                continue
+        if len(filtered_boxes) > 0:
+            # Convert from center format to corner format for NMS
+            x_centers = filtered_boxes[:, 0]
+            y_centers = filtered_boxes[:, 1]
+            widths = filtered_boxes[:, 2]
+            heights = filtered_boxes[:, 3]
             
-            # Extract bbox and class
-            x_center, y_center, w, h = detection[:4]
-            class_scores = detection[5:]
-            class_id = np.argmax(class_scores)
-            class_conf = class_scores[class_id]
+            x1s = x_centers - widths / 2
+            y1s = y_centers - heights / 2
+            x2s = x_centers + widths / 2
+            y2s = y_centers + heights / 2
             
-            # Final confidence
-            confidence = obj_conf * class_conf
+            # Stack into [N, 4] array for NMS
+            boxes_xyxy = np.stack([x1s, y1s, x2s, y2s], axis=1)
             
-            if confidence >= conf_threshold:
-                # Convert from center format (x, y, w, h) to corner format (x1, y1, x2, y2)
-                x1 = x_center - w / 2
-                y1 = y_center - h / 2
-                x2 = x_center + w / 2
-                y2 = y_center + h / 2
-                
-                # Return in format expected by YOLOResultWrapper: [x1, y1, x2, y2, conf, cls]
-                results.append([
-                    float(x1), float(y1), float(x2), float(y2),
-                    float(confidence), float(class_id)
-                ])
+            # Apply NMS using OpenCV
+            indices = cv2.dnn.NMSBoxes(
+                boxes_xyxy.tolist(),
+                filtered_confs.tolist(),
+                conf_threshold,
+                0.4  # NMS IoU threshold
+            )
+            
+            # Extract results after NMS
+            if len(indices) > 0:
+                indices = indices.flatten()
+                for idx in indices:
+                    x1, y1, x2, y2 = boxes_xyxy[idx]
+                    confidence = float(filtered_confs[idx])
+                    class_id = int(filtered_class_ids[idx])
+                    
+                    # Scale coordinates back to original image size
+                    # ONNX model expects 736x736, need to scale to original
+                    h, w = image.shape[:2]
+                    scale_x = w / self.input_size
+                    scale_y = h / self.input_size
+                    
+                    x1 = float(x1 * scale_x)
+                    y1 = float(y1 * scale_y)
+                    x2 = float(x2 * scale_x)
+                    y2 = float(y2 * scale_y)
+                    
+                    results.append([x1, y1, x2, y2, confidence, class_id])
         
         return results
     

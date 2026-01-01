@@ -326,53 +326,92 @@ def init_routes(app, login_manager):
     @app.route('/api/available_cameras', methods=['GET'])
     @login_required
     def get_available_cameras():
-        """Get list of available cameras with OpenCV index (optimized)"""
+        """Get list of available cameras with OpenCV index (multi-backend support for DroidCam)"""
         if current_user.role != 'admin':
             return jsonify({'error': 'Unauthorized'}), 403
         
         try:
+            # Check config for skip laptop webcam
+            try:
+                import sys
+                import os
+                import platform
+                sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+                from droidcam_config import SKIP_LAPTOP_WEBCAM, LAPTOP_WEBCAM_INDEX, DROIDCAM_CAMERA_INDEX
+            except:
+                SKIP_LAPTOP_WEBCAM = False
+                LAPTOP_WEBCAM_INDEX = 0
+                DROIDCAM_CAMERA_INDEX = 1
+            
             cameras = []
-            # OPTIMIZED: Test max 3 cameras with DirectShow (faster), stop after 2 consecutive failures
             consecutive_failures = 0
             
-            for i in range(3):  # Reduced from 10
-                try:
-                    # Use DirectShow backend for faster initialization (skips slow NVIDIA Broadcast)
-                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                    
-                    if cap.isOpened():
-                        ret, _ = cap.read()
-                        if ret:
-                            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            fps = cap.get(cv2.CAP_PROP_FPS)
-                            backend = cap.getBackendName()
-                            
-                            cameras.append({
-                                'index': i,
-                                'name': f'Camera {i} ({width}x{height})',
-                                'width': width,
-                                'height': height,
-                                'fps': fps,
-                                'backend': backend
-                            })
-                            consecutive_failures = 0
-                        else:
-                            consecutive_failures += 1
-                        cap.release()
-                    else:
-                        consecutive_failures += 1
-                    
-                    # Stop early if 2 consecutive failures (no more cameras)
-                    if consecutive_failures >= 2:
-                        print(f"Stopped camera enumeration after {consecutive_failures} failures")
-                        break
+            # Multi-backend approach: Some cameras (DroidCam) need Media Foundation, not DirectShow
+            if platform.system() == 'Windows':
+                backends_to_try = [cv2.CAP_DSHOW, cv2.CAP_MSMF]
+            else:
+                backends_to_try = [cv2.CAP_ANY]
+            
+            # Test cameras 0-4
+            for i in range(5):
+                # SKIP laptop webcam if configured
+                if SKIP_LAPTOP_WEBCAM and i == LAPTOP_WEBCAM_INDEX:
+                    print(f"Skipping Camera {i} (configured as laptop webcam)")
+                    consecutive_failures = 0  # Don't count as failure
+                    continue
+                
+                camera_found = False
+                
+                # Try multiple backends for this camera
+                for backend in backends_to_try:
+                    try:
+                        cap = cv2.VideoCapture(i, backend)
                         
-                except Exception as e:
-                    print(f"Error testing camera {i}: {e}")
+                        if cap.isOpened():
+                            # Quick read test
+                            ret, frame = cap.read()
+                            if ret and frame is not None:
+                                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                                backend_name = cap.getBackendName()
+                                
+                                # Mark DroidCam in name
+                                camera_name = f'Camera {i}: {width}x{height}'
+                                if i == DROIDCAM_CAMERA_INDEX:
+                                    camera_name = f'📱 DroidCam {i}: {width}x{height}'
+                                
+                                cameras.append({
+                                    'index': i,
+                                    'name': camera_name,
+                                    'width': width,
+                                    'height': height,
+                                    'fps': fps,
+                                    'backend': backend_name
+                                })
+                                
+                                camera_found = True
+                                consecutive_failures = 0
+                                cap.release()
+                                break  # Camera found, stop trying other backends
+                            
+                            cap.release()
+                        
+                    except Exception as e:
+                        print(f"Camera {i} with backend {backend}: {e}")
+                        continue
+                
+                if not camera_found:
                     consecutive_failures += 1
-                    if consecutive_failures >= 2:
-                        break
+                else:
+                    consecutive_failures = 0
+                
+                # Stop early if 2 consecutive failures
+                if consecutive_failures >= 2:
+                    print(f"Stopped camera enumeration after {consecutive_failures} consecutive failures")
+                    break
+            
+            print(f"Found {len(cameras)} camera(s)")
             
             return jsonify({
                 'success': True,
